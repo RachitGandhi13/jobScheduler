@@ -62,6 +62,22 @@ this failure mode) — the price of putting the queue in the same database as ev
 
 ## Design decisions log
 
+- **`worker-service` has two entrypoints: a continuous poll loop (`src/index.ts`) and a
+  one-shot sweep-until-empty-then-exit mode (`src/runOnce.ts`), sharing all their claim/execute
+  logic via `src/sweep.ts`.** Forced by a real constraint, not preference: Render's Background
+  Worker service type (needed for a continuously-running poll loop) has no free tier — Starter is
+  $7/mo minimum — while Render's Cron Job type, which runs a command on a schedule and exits, does.
+  `runOnce.ts` registers a worker, calls `runSweep()` in a loop until a pass claims nothing or a
+  `MAX_RUN_MS` wall-clock budget expires (a schedule firing every few minutes can find several
+  minutes' worth of due jobs backed up, not just what arrived since the last tick), drains
+  whatever it claimed, marks itself offline, exits — reusing `claim.ts`/`execute.ts`/`heartbeat.ts`
+  unchanged. The trade-off is job pickup latency: continuous polling is bounded by
+  `POLL_INTERVAL_MS` (~1s); cron mode is bounded by however often the schedule fires (recommended
+  every 1 minute). Verified by running the compiled `dist/runOnce.js` directly with plain `node`
+  (not `tsx`) against a live database: a 3-job run and an 8-job run against a `concurrencyLimit` of
+  4 (forcing multiple sweep passes within one invocation) both completed correctly and exited 0; a
+  zero-jobs run exited in ~0.2s. Both entrypoints remain available — `npm start` for a paid,
+  always-on Background Worker with lower latency; `npm run start:once` for the free Cron Job path.
 - **`packages/db` builds to `dist/`; its `package.json` `main`/`types` point there, not at
   `src/`.** This was a real production outage, not a hypothetical: a real Render deploy of
   `backend-api` failed with `ERR_MODULE_NOT_FOUND: .../packages/db/src/schema.js` because

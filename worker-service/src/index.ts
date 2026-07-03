@@ -1,9 +1,7 @@
 import "dotenv/config";
-import { eq } from "drizzle-orm";
-import { createDb, queues as queuesTable } from "@scheduler/db";
-import { claimJobs, getInFlightCount } from "./claim.js";
-import { executeClaimedJob } from "./execute.js";
+import { createDb } from "@scheduler/db";
 import { markWorkerOffline, registerWorker, startHeartbeat } from "./heartbeat.js";
+import { runSweep } from "./sweep.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
@@ -24,28 +22,11 @@ function sleep(ms: number) {
 }
 
 async function pollOnce(workerId: string) {
-  const activeQueues = await db.select().from(queuesTable).where(eq(queuesTable.isPaused, false));
-
-  for (const queue of activeQueues) {
-    if (shuttingDown) break;
-
-    // Respect the queue's concurrencyLimit across the whole fleet, not just this
-    // worker: in-flight count is a DB read, so it reflects every worker's claims.
-    const currentInFlight = await getInFlightCount(db, queue.id);
-    const availableSlots = queue.concurrencyLimit - currentInFlight;
-    if (availableSlots <= 0) continue;
-
-    const claimLimit = Math.min(availableSlots, MAX_CLAIM_PER_QUEUE);
-    const claimed = await claimJobs(db, queue.id, claimLimit, workerId);
-
-    for (const job of claimed) {
-      const task = executeClaimedJob(db, job, queue, workerId).catch((err) =>
-        console.error(`[worker] job ${job.id} execution crashed unexpectedly`, err),
-      );
-      inFlight.add(task);
-      task.finally(() => inFlight.delete(task));
-    }
-  }
+  const { inFlight: newlyClaimed } = await runSweep(db, workerId, {
+    maxClaimPerQueue: MAX_CLAIM_PER_QUEUE,
+    onJobCrash: (jobId, err) => console.error(`[worker] job ${jobId} execution crashed unexpectedly`, err),
+  });
+  for (const task of newlyClaimed) inFlight.add(task);
 }
 
 async function pollLoop(workerId: string) {

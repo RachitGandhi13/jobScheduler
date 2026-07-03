@@ -325,16 +325,25 @@ no server-side rendering, no separate backend-for-frontend.
   `backend-api` depends on `@scheduler/db` as a workspace package, which only resolves when
   `npm install` runs from the repo root. Setting Root Directory to the service's own subdirectory
   makes `npm install` try to fetch `@scheduler/db` from the public npm registry and fail.
-  - `backend-api` — Web Service. Build: `npm install && npm run build:api`. Start:
-    `npm run start -w backend-api`. Health Check Path: `/health`.
-  - `worker-service` — Background Worker. Build: `npm install && npm run build:worker`. Start:
-    `npm run start -w worker-service`. Scale out by increasing instance count — each instance
-    registers as its own `workers` row and claims independently; no extra config needed. Only needs
-    `DATABASE_URL` — it has no HTTP layer and never reads `JWT_SECRET`.
+  - `backend-api` — Web Service. **Language: Node** (not Docker — there's no Dockerfile in this
+    repo). Build: `npm install && npm run build:api`. Start: `npm run start -w backend-api`.
+    Health Check Path: `/health`.
+  - `worker-service` — **Cron Job**, not Background Worker. Render's Background Worker type has no
+    free tier (Starter is $7/mo minimum); Cron Job does. **Language: Node**. Build:
+    `npm install && npm run build:worker`. Command: `npm run start:once -w worker-service`.
+    Schedule: `*/1 * * * *` (every minute) — widen it if you want a coarser cadence. Only needs
+    `DATABASE_URL` — no HTTP layer, never reads `JWT_SECRET`. This runs `src/runOnce.ts`: claims and
+    executes everything currently due, looping until a pass claims nothing (bounded by
+    `MAX_RUN_MS`), then exits — instead of polling forever like a real Background Worker would. See
+    `DEVELOPMENT.md` for the trade-off (job pickup latency becomes "up to the schedule interval"
+    instead of ~1s) and why a single invocation loops rather than doing one pass.
+  - If you'd rather have the always-on Background Worker (lower latency, one $7/mo service instead
+    of this workaround): same Build Command, Start Command `npm run start -w worker-service`
+    (`src/index.ts`, the continuous poll loop) instead of `start:once`.
   - `build:api`/`build:worker` (root `package.json`) build `packages/db` first, then the service —
     required because `@scheduler/db`'s `package.json` points `main`/`types` at its compiled output,
-    not raw TypeScript, so plain `node dist/index.js` (what both services run in production) needs
-    that output to exist. See `DEVELOPMENT.md` for what happens if you skip this.
+    not raw TypeScript, so plain `node dist/index.js` (what every entrypoint runs in production)
+    needs that output to exist. See `DEVELOPMENT.md` for what happens if you skip this.
 - **Vercel**: `frontend-dashboard`, with Root Directory set to `frontend-dashboard` — this one's
   fine as a subdirectory root, since the frontend has no workspace-linked dependencies (only
   `react`/`react-dom`/`recharts`). Vercel auto-detects the Vite build (`vite build`, output `dist`).
@@ -350,9 +359,10 @@ no server-side rendering, no separate backend-for-frontend.
 | `backend-api` | Render | `WORKER_HEARTBEAT_TIMEOUT_MS` | no | default `15000` |
 | `backend-api` | Render | `ZOMBIE_CLEANUP_INTERVAL_MS` | no | default `10000` |
 | `worker-service` | Render | `DATABASE_URL` | yes | same Neon connection string |
-| `worker-service` | Render | `POLL_INTERVAL_MS` | no | default `1000` |
-| `worker-service` | Render | `HEARTBEAT_INTERVAL_MS` | no | default `5000` |
-| `worker-service` | Render | `MAX_CLAIM_PER_QUEUE` | no | default `5` |
+| `worker-service` | Render | `HEARTBEAT_INTERVAL_MS` | no | default `5000`; used by both entrypoints |
+| `worker-service` | Render | `MAX_CLAIM_PER_QUEUE` | no | default `5`; used by both entrypoints |
+| `worker-service` | Render | `MAX_RUN_MS` | no | default `45000`; **Cron Job mode only** |
+| `worker-service` | Render | `POLL_INTERVAL_MS` | no | default `1000`; **Background Worker mode only**, ignored by Cron Job mode |
 | `frontend-dashboard` | Vercel | `VITE_API_BASE_URL` | yes | Render `backend-api` URL + `/api` |
 
 Each service's `.env.example` carries the same guidance inline.

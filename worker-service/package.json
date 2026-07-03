@@ -6,8 +6,10 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:once": "tsx src/runOnce.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:once": "node dist/runOnce.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
