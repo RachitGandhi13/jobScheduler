@@ -360,6 +360,7 @@ no server-side rendering, no separate backend-for-frontend.
 | `backend-api` | Render | `DATABASE_URL` | yes | Neon connection string, direct or pooled |
 | `backend-api` | Render | `PORT` | no | Render injects this itself |
 | `backend-api` | Render | `JWT_SECRET` | yes | generate with `openssl rand -base64 48` |
+| `backend-api` | Render | `CORS_ORIGIN` | yes | your Vercel URL, e.g. `https://your-app.vercel.app` (comma-separate for multiple) |
 | `backend-api` | Render | `MOCK_AUTH` | no | **omit entirely** — never set in production |
 | `backend-api` | Render | `WORKER_HEARTBEAT_TIMEOUT_MS` | no | default `15000` |
 | `backend-api` | Render | `ZOMBIE_CLEANUP_INTERVAL_MS` | no | default `10000` |

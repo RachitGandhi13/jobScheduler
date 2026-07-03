@@ -62,6 +62,25 @@ this failure mode) — the price of putting the queue in the same database as ev
 
 ## Design decisions log
 
+- **`backend-api` had zero CORS configuration until the Vercel↔Render deploy actually surfaced
+  it.** The frontend and backend running on different origins (a `vercel.app` domain calling an
+  `onrender.com` domain) is a textbook cross-origin request, which browsers block by default absent
+  `Access-Control-Allow-Origin` response headers. This gap survived every prior check in this
+  project because none of them involved a real browser making a cross-origin request: local dev's
+  frontend/backend are technically cross-origin too (different ports), but verification there used
+  `curl` against the Vite dev server, and `curl` doesn't enforce same-origin policy — only browsers
+  do. Fix: the `cors` package, gated to an explicit `CORS_ORIGIN` allowlist (comma-separated) rather
+  than a wildcard — auth here is Bearer-token, not cookies, so a wildcard wouldn't itself leak
+  credentials cross-origin, but pinning to known origins is still the safer default. Verified with
+  `curl -H "Origin: ..."` against three cases: an allowed origin's preflight `OPTIONS` (204, correct
+  `Access-Control-Allow-Methods`/`Allow-Headers`), an allowed origin's actual request (response
+  carries `Access-Control-Allow-Origin`, so a browser would let JS read it), and a non-allowlisted
+  origin's request (response omits that header, so a browser would block JS from reading it) — `curl`
+  itself doesn't enforce CORS, but this confirms the server sends the headers a browser needs to
+  either allow or block correctly. The general lesson stacks on the `packages/db` build gap and the
+  `bcryptjs` import gap from earlier in this log: **each was invisible to every check that didn't
+  exercise the exact real-world path** (compiled output run by plain `node`; a real cross-origin
+  browser request) **that production actually takes.**
 - **`worker-service` has two entrypoints: a continuous poll loop (`src/index.ts`) and a
   one-shot sweep-until-empty-then-exit mode (`src/runOnce.ts`), sharing all their claim/execute
   logic via `src/sweep.ts`.** Forced by a real constraint, not preference: Render's Background
