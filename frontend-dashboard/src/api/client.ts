@@ -1,4 +1,4 @@
-import { loadSettings } from "../settings";
+import { loadSession, type AuthSession } from "../auth";
 import type { ApiErrorBody, Job, JobLog, Metrics, Pagination, Queue, Worker } from "../types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000/api";
@@ -16,13 +16,12 @@ export class ApiRequestError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const settings = loadSettings();
+  const session = loadSession();
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      "x-mock-user-id": settings.userId,
-      "x-mock-organization-id": settings.organizationId,
+      ...(session ? { Authorization: `Bearer ${session.token}` } : {}),
       ...init?.headers,
     },
   });
@@ -41,8 +40,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function projectPath(path: string): string {
-  const { projectId } = loadSettings();
-  return `/projects/${projectId}${path}`;
+  const session = loadSession();
+  if (!session?.project) {
+    throw new Error("No active project in session");
+  }
+  return `/projects/${session.project.id}${path}`;
 }
 
 export interface ListJobsParams {
@@ -71,4 +73,24 @@ export const api = {
     return request<{ data: Job[]; pagination: Pagination }>(projectPath(`/jobs${suffix}`));
   },
   getJobLogs: (jobId: string) => request<{ data: JobLog[] }>(projectPath(`/jobs/${jobId}/logs`)),
+};
+
+export interface SignupBody {
+  email: string;
+  password: string;
+  organizationName: string;
+  name?: string;
+}
+
+export interface LoginBody {
+  email: string;
+  password: string;
+}
+
+export const authApi = {
+  signup: (body: SignupBody) =>
+    request<{ data: AuthSession }>("/auth/signup", { method: "POST", body: JSON.stringify(body) }),
+  login: (body: LoginBody) =>
+    request<{ data: AuthSession }>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
+  me: () => request<{ data: Omit<AuthSession, "token"> }>("/auth/me"),
 };

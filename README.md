@@ -132,9 +132,10 @@ Worker         1---* JobExecution         (job_executions.worker_id, nullable)
 3. `npm run db:generate -w packages/db` then `npm run db:migrate -w packages/db` to create the schema.
 4. `npm run dev:api` and `npm run dev:worker` (separate terminals) to run the API and a worker.
 5. Copy `frontend-dashboard/.env.example` to `.env` (sets `VITE_API_BASE_URL`), then
-   `npm run dev:frontend` and open the printed localhost URL. On first load, open **Connection
-   settings** in the sidebar and paste in an organization id and project id (see Authentication
-   below) — there's no login flow yet, so the dashboard needs these the same way `curl` does.
+   `npm run dev:frontend` and open the printed localhost URL. On first load you'll land on a
+   sign-up screen — creating an account also creates an organization, a default project, and a
+   default queue for you in one step, so there's nothing to manually configure before the
+   dashboard shows live data.
 
 ## Multi-tenancy model
 
@@ -147,15 +148,25 @@ returns `404` rather than leaking its existence.
 ## Authentication
 
 Requests must carry `Authorization: Bearer <jwt>`, where the JWT payload is
-`{ userId, organizationId }` signed with `JWT_SECRET`. There is no login/signup endpoint yet, so for
-local development set `MOCK_AUTH=true` in `backend-api/.env` and instead send:
+`{ userId, organizationId }` signed with `JWT_SECRET`. Get a token via:
 
-```
-x-mock-user-id: <any string>
-x-mock-organization-id: <organizationId of an existing organization row>
-```
+- `POST /api/auth/signup` — `{ email, password, organizationName, name? }`. Creates a `User`, an
+  `Organization` owned by them, a `Default Project`, and a `default` `Queue`, all in one
+  transaction, then returns `{ token, user, organization, project }`. `409 email_taken` if the
+  email is already registered.
+- `POST /api/auth/login` — `{ email, password }`. Verifies the bcrypt hash and returns the same
+  shape, using the caller's first (oldest) organization membership. `401 invalid_credentials` on
+  any mismatch (never reveals which part was wrong).
+- `GET /api/auth/me` — requires a valid `Bearer` token; returns `{ user, organization, project }`
+  for session rehydration (`frontend-dashboard` calls this once on load to validate a stored
+  token before trusting it).
 
-`MOCK_AUTH` must never be enabled outside local dev.
+`frontend-dashboard` uses this flow directly — see "Frontend dashboard" below.
+
+For local scripting/testing without going through signup, `backend-api/.env` also supports
+`MOCK_AUTH=true`, which accepts `x-mock-user-id` / `x-mock-organization-id` headers instead of a
+JWT for any *existing* organization id. **Never set this in a deployed environment** — it lets
+anyone who knows an organization's id act as that org.
 
 ## API
 
@@ -164,6 +175,11 @@ All responses are JSON. Errors use a structured shape:
 ```json
 { "error": { "code": "queue_not_found", "message": "Queue ... not found in this project", "details": null } }
 ```
+
+### `POST /api/auth/signup`, `POST /api/auth/login`, `GET /api/auth/me`
+
+Public (no token required for signup/login). Full request/response shapes are in "Authentication"
+above. Every endpoint below this point requires `Authorization: Bearer <jwt>` from one of these.
 
 ### `POST /api/projects/:projectId/jobs`
 
@@ -261,9 +277,15 @@ concept the schema supports. Response: `200 { "data": <worker row>[] }`.
 ## Frontend dashboard
 
 `frontend-dashboard/` is a Vite + React 19 + TypeScript + Tailwind CSS v4 SPA (`recharts` for
-charts), talking to `backend-api` over the REST API above via `x-mock-*` headers (see
-Authentication) — no server-side rendering, no separate backend-for-frontend.
+charts), talking to `backend-api` over the REST API above via real `Authorization: Bearer` auth —
+no server-side rendering, no separate backend-for-frontend.
 
+- **Auth**: `src/components/AuthScreen.tsx` (login/signup toggle) + `src/hooks/useAuth.ts` +
+  `src/auth.ts` (session storage). Signing up calls `POST /api/auth/signup` and stores the
+  returned `{ token, user, organization, project }` in `localStorage`; every subsequent API call
+  sends `Authorization: Bearer <token>` (`src/api/client.ts`). On load, a stored token is validated
+  against `GET /api/auth/me` before being trusted — an expired or revoked token drops back to the
+  login screen instead of silently showing broken data.
 - **Design tokens** live in `src/index.css` as a Tailwind v4 `@theme` block: `sand` (canvas),
   `olive`/`olive-dark` (brand/primary actions), `sage` (secondary highlight), `terracotta`/
   `terracotta-light` (alerts, dead-letter counts). Glass tiles are a shared `<GlassCard>` component

@@ -1,21 +1,21 @@
 import { useState, type ReactNode } from "react";
-import type { DashboardSettings } from "../settings";
+import type { AuthSession } from "../auth";
+import { AccountPanel } from "./AccountPanel";
 import { MenuIcon } from "./icons";
 import { Sidebar, type TabKey } from "./Sidebar";
-import { SettingsPanel } from "./SettingsPanel";
 
 interface LayoutProps {
   active: TabKey;
   onNavigate: (tab: TabKey) => void;
   title: string;
-  settings: DashboardSettings;
-  onSaveSettings: (next: DashboardSettings) => void;
+  session: AuthSession;
+  onLogout: () => void;
   children: ReactNode;
 }
 
-export function Layout({ active, onNavigate, title, settings, onSaveSettings, children }: LayoutProps) {
+export function Layout({ active, onNavigate, title, session, onLogout, children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
 
   return (
     <div className="flex min-h-screen bg-sand">
@@ -24,7 +24,7 @@ export function Layout({ active, onNavigate, title, settings, onSaveSettings, ch
         onNavigate={onNavigate}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAccount={() => setAccountOpen(true)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -42,12 +42,8 @@ export function Layout({ active, onNavigate, title, settings, onSaveSettings, ch
         <main className="flex-1 overflow-y-auto p-4 md:p-8">{children}</main>
       </div>
 
-      {settingsOpen && (
-        <SettingsPanel
-          settings={settings}
-          onSave={onSaveSettings}
-          onClose={() => setSettingsOpen(false)}
-        />
+      {accountOpen && (
+        <AccountPanel session={session} onLogout={onLogout} onClose={() => setAccountOpen(false)} />
       )}
     </div>
   );

@@ -13,10 +13,10 @@ interface SidebarProps {
   onNavigate: (tab: TabKey) => void;
   open: boolean;
   onClose: () => void;
-  onOpenSettings: () => void;
+  onOpenAccount: () => void;
 }
 
-export function Sidebar({ active, onNavigate, open, onClose, onOpenSettings }: SidebarProps) {
+export function Sidebar({ active, onNavigate, open, onClose, onOpenAccount }: SidebarProps) {
   return (
     <>
       {open && <div className="fixed inset-0 z-30 bg-olive-dark/20 backdrop-blur-sm md:hidden" onClick={onClose} />}
@@ -55,11 +55,11 @@ export function Sidebar({ active, onNavigate, open, onClose, onOpenSettings }: S
         </nav>
 
         <button
-          onClick={onOpenSettings}
+          onClick={onOpenAccount}
           className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-olive-dark/70 transition hover:bg-sage/40"
         >
           <SettingsIcon className="h-5 w-5" />
-          Connection settings
+          Account
         </button>
       </aside>
     </>

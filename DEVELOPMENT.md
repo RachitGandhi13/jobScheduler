@@ -106,10 +106,24 @@ this failure mode) — the price of putting the queue in the same database as ev
   which apply yet. Similarly, three polled resources (queues, workers, metrics) didn't justify a data
   library; a ~30-line `usePolling` hook covers refetch-on-interval plus manual refetch after a
   mutation (e.g. right after pause/resume).
-- **No login flow; the dashboard authenticates the same way `curl` does.** A `Connection settings`
-  panel stores `organizationId`/`projectId`/`userId` in `localStorage` and the API client sends them
-  as `x-mock-*` headers — mirroring `backend-api`'s `MOCK_AUTH` dev fallback exactly, rather than
-  building a real login UI against an auth system that doesn't exist yet.
+- **Signup creates a whole default workspace, not just a user.** `POST /api/auth/signup`
+  (`backend-api/src/routes/auth.ts`) inserts `User` + `Organization` + `OrganizationMember(owner)` +
+  a `Default Project` + a `default` `Queue` in one transaction. The alternative — signup only
+  creates a user, with separate "create your organization" / "create your first project" steps —
+  is more correct long-term (a user might want multiple projects, or to join an existing org
+  instead), but would have meant either building project/queue CRUD endpoints just to get a fresh
+  signup to a usable screen, or leaving the dashboard blank after signup with a "now go create a
+  project via curl" instruction. One transaction that lands somewhere usable won out for this
+  scope; multi-project-per-org and org-invite flows are the natural next increment.
+- **`bcryptjs`'s named exports don't survive Node's CJS→ESM interop.** `import { hash, compare }
+  from "bcryptjs"` type-checks (its `.d.ts` declares named exports) but fails at runtime —
+  `SyntaxError: The requested module 'bcryptjs' does not provide an export named 'compare'` —
+  because its actual `module.exports = require("./dist/bcrypt.js")` re-export pattern isn't
+  something `cjs-module-lexer` can statically analyze. Same class of issue flagged for
+  `cron-parser` back in Phase 3; the fix is the same: `import bcrypt from "bcryptjs"` (default
+  import always works, since it just grabs whatever `module.exports` is) and call
+  `bcrypt.hash(...)` / `bcrypt.compare(...)`. Caught by actually running signup against a live
+  database rather than trusting `tsc --noEmit`, which had already passed.
 
 ## Design trace: queue pausing × cron evaluation at the DB level
 
@@ -193,6 +207,15 @@ processes, no mocks):
    layout/styling/responsiveness in a browser — no browser-automation tool was available in this
    environment, so the visual result of the design-token/responsive-layout work is unconfirmed
    beyond "it compiles and the markup is structurally sound."
+7. **Auth** — `POST /api/auth/signup` (`backend-api/src/routes/auth.ts`) hashes the password with
+   `bcrypt`, then in one transaction creates the `User` + `Organization` + owner
+   `OrganizationMember` + a default `Project` + `Queue`, and returns a JWT signed with
+   `{ userId, organizationId }`. `frontend-dashboard` stores that token and sends
+   `Authorization: Bearer` on every call from then on (`src/api/client.ts`) — no more `x-mock-*`
+   headers anywhere in the frontend. Verified live: signup produced a working, immediately usable
+   project+queue; a duplicate-email signup correctly 409'd; login with a wrong password 401'd,
+   with a correct one round-tripping the same session; the issued token worked unmodified against
+   the project-scoped API (`GET /queues`) with zero manual configuration.
 
 ## Local development
 

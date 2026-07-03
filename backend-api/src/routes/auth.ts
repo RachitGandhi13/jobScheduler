@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Router } from "express";
-import { compare, hash } from "bcryptjs";
+import bcrypt from "bcryptjs";
 import { asc, eq } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
@@ -51,7 +51,7 @@ authRouter.post(
       throw ApiError.conflict("email_taken", "An account with this email already exists");
     }
 
-    const passwordHash = await hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 10);
 
     const result = await db.transaction(async (tx) => {
       const [user] = await tx.insert(users).values({ email, passwordHash, name }).returning();
@@ -119,7 +119,7 @@ authRouter.post(
     const { email, password } = req.body as z.infer<typeof loginBodySchema>;
 
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!user || !(await compare(password, user.passwordHash))) {
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       throw ApiError.unauthorized("invalid_credentials", "Email or password is incorrect");
     }
 
