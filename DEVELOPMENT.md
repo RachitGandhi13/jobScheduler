@@ -62,6 +62,25 @@ this failure mode) — the price of putting the queue in the same database as ev
 
 ## Design decisions log
 
+- **`packages/db` builds to `dist/`; its `package.json` `main`/`types` point there, not at
+  `src/`.** This was a real production outage, not a hypothetical: a real Render deploy of
+  `backend-api` failed with `ERR_MODULE_NOT_FOUND: .../packages/db/src/schema.js` because
+  `main`/`types` originally pointed straight at `./src/index.ts`. That "worked" in every check run
+  before the actual deploy — local dev (`tsx watch` transpiles the whole module graph on the fly,
+  including workspace packages), `tsc --noEmit` (TypeScript is perfectly happy reading a `.ts` file
+  as another package's type source) — because every one of those tools has a TypeScript-aware
+  layer in front of Node's module resolution. Plain `node dist/index.js`, what both services
+  actually run in production, does not: it resolves `@scheduler/db` via `package.json`, finds
+  `./src/index.ts`, and chokes on that file's `export * from "./schema.js"` since no `schema.js`
+  exists next to the `.ts` source. Fix: `packages/db` gets a real `build` script
+  (`tsc -p tsconfig.json`), `main`/`types` point at `./dist/index.js`/`./dist/index.d.ts`, and the
+  root `package.json`'s `dev:api`/`dev:worker`/`build:api`/`build:worker` scripts all build
+  `packages/db` first. Verified by literally running `node backend-api/dist/index.js` directly
+  (not through any dev tool) both before the fix (reproduced the exact Render error locally) and
+  after (clean start, `/health` responds). The lesson generalizes: **`tsc --noEmit` passing is not
+  evidence that compiled output runs** — it only proves the source typechecks, not that plain
+  `node` can execute what gets emitted. This gap existed silently from Phase 1 through every build
+  verification in this document until an actual deploy caught it.
 - **Atomic claim via `SELECT ... FOR UPDATE SKIP LOCKED`** (`worker-service/src/claim.ts`): concurrent
   workers polling the same queue never block on or duplicate-claim a row — a locked row is skipped,
   not waited on. The claiming `UPDATE` runs in the same transaction as the lock, so a row is never

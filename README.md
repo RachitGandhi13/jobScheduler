@@ -130,8 +130,15 @@ Worker         1---* JobExecution         (job_executions.worker_id, nullable)
 2. Provision a Postgres database and set `DATABASE_URL` in `backend-api/.env` and
    `worker-service/.env` (copy from the respective `.env.example`).
 3. `npm run db:generate -w packages/db` then `npm run db:migrate -w packages/db` to create the schema.
-4. `npm run dev:api` and `npm run dev:worker` (separate terminals) to run the API and a worker.
-5. Copy `frontend-dashboard/.env.example` to `.env` (sets `VITE_API_BASE_URL`), then
+4. `npm run build -w packages/db` — compiles the shared schema/client to `packages/db/dist`.
+   **Required**, not optional: `backend-api`/`worker-service` resolve `@scheduler/db` through its
+   `package.json` `main`/`types` fields, which point at the compiled output, not the TypeScript
+   source — re-run this any time you edit `packages/db/src/*`. `npm run dev:api` / `dev:worker`
+   below do this automatically at startup, so this step mainly matters if you're running
+   `tsc`/`npm run typecheck` directly against `backend-api` or `worker-service` before ever starting
+   either dev server.
+5. `npm run dev:api` and `npm run dev:worker` (separate terminals) to run the API and a worker.
+6. Copy `frontend-dashboard/.env.example` to `.env` (sets `VITE_API_BASE_URL`), then
    `npm run dev:frontend` and open the printed localhost URL. On first load you'll land on a
    sign-up screen — creating an account also creates an organization, a default project, and a
    default queue for you in one step, so there's nothing to manually configure before the
@@ -308,31 +315,41 @@ no server-side rendering, no separate backend-for-frontend.
 
 ## Deployment
 
-- **Neon (Postgres)**: create a project, copy the **direct** (non-`-pooler`) connection string —
-  see `DEVELOPMENT.md` for why pooled connections are unsafe here — and run migrations once against
-  it: `DATABASE_URL=<neon-connection-string> npm run db:migrate -w packages/db`.
-- **Render**, two services from this repo (both need the repo root as the build context, since npm
-  workspaces requires the root install):
-  - `backend-api` — Web Service. Build: `npm install && npm run build -w backend-api`. Start:
-    `npm run start -w backend-api`.
-  - `worker-service` — Background Worker. Build: `npm install && npm run build -w worker-service`.
-    Start: `npm run start -w worker-service`. Scale out by increasing instance count — each instance
-    registers as its own `workers` row and claims independently; no extra config needed.
-- **Vercel**: `frontend-dashboard`, with Root Directory set to `frontend-dashboard`. Vercel
-  auto-detects the Vite build (`vite build`, output `dist`); the repo's root `package-lock.json`
-  lets it install the whole workspace so nothing resolves incorrectly.
+- **Neon (Postgres)**: create a project and copy a connection string. Either the direct or the
+  pooled (`-pooler`) string works — `packages/db`'s client sets `prepare: false` specifically so
+  pooled (PgBouncer transaction-mode) connections are safe here; see `DEVELOPMENT.md`. Run
+  migrations once against it: `DATABASE_URL=<neon-connection-string> npm run db:migrate -w
+  packages/db`.
+- **Render**, two services from this repo. For both, **leave Root Directory blank** (repo root) —
+  do **not** set it to `backend-api`/`worker-service`. This is an npm workspaces monorepo:
+  `backend-api` depends on `@scheduler/db` as a workspace package, which only resolves when
+  `npm install` runs from the repo root. Setting Root Directory to the service's own subdirectory
+  makes `npm install` try to fetch `@scheduler/db` from the public npm registry and fail.
+  - `backend-api` — Web Service. Build: `npm install && npm run build:api`. Start:
+    `npm run start -w backend-api`. Health Check Path: `/health`.
+  - `worker-service` — Background Worker. Build: `npm install && npm run build:worker`. Start:
+    `npm run start -w worker-service`. Scale out by increasing instance count — each instance
+    registers as its own `workers` row and claims independently; no extra config needed. Only needs
+    `DATABASE_URL` — it has no HTTP layer and never reads `JWT_SECRET`.
+  - `build:api`/`build:worker` (root `package.json`) build `packages/db` first, then the service —
+    required because `@scheduler/db`'s `package.json` points `main`/`types` at its compiled output,
+    not raw TypeScript, so plain `node dist/index.js` (what both services run in production) needs
+    that output to exist. See `DEVELOPMENT.md` for what happens if you skip this.
+- **Vercel**: `frontend-dashboard`, with Root Directory set to `frontend-dashboard` — this one's
+  fine as a subdirectory root, since the frontend has no workspace-linked dependencies (only
+  `react`/`react-dom`/`recharts`). Vercel auto-detects the Vite build (`vite build`, output `dist`).
 
 ### Environment variables
 
 | Service | Platform | Variable | Required | Notes |
 |---|---|---|---|---|
-| `backend-api` | Render | `DATABASE_URL` | yes | Neon **direct** connection string |
+| `backend-api` | Render | `DATABASE_URL` | yes | Neon connection string, direct or pooled |
 | `backend-api` | Render | `PORT` | no | Render injects this itself |
 | `backend-api` | Render | `JWT_SECRET` | yes | generate with `openssl rand -base64 48` |
 | `backend-api` | Render | `MOCK_AUTH` | no | **omit entirely** — never set in production |
 | `backend-api` | Render | `WORKER_HEARTBEAT_TIMEOUT_MS` | no | default `15000` |
 | `backend-api` | Render | `ZOMBIE_CLEANUP_INTERVAL_MS` | no | default `10000` |
-| `worker-service` | Render | `DATABASE_URL` | yes | same Neon direct string |
+| `worker-service` | Render | `DATABASE_URL` | yes | same Neon connection string |
 | `worker-service` | Render | `POLL_INTERVAL_MS` | no | default `1000` |
 | `worker-service` | Render | `HEARTBEAT_INTERVAL_MS` | no | default `5000` |
 | `worker-service` | Render | `MAX_CLAIM_PER_QUEUE` | no | default `5` |
