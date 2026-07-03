@@ -1,0 +1,21 @@
+{
+  "name": "distributed-job-scheduler",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "backend-api",
+    "worker-service",
+    "frontend-dashboard",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w backend-api",
+    "dev:worker": "npm run dev -w worker-service",
+    "dev:frontend": "npm run dev -w frontend-dashboard",
+    "db:generate": "npm run generate -w packages/db",
+    "db:migrate": "npm run migrate -w packages/db"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

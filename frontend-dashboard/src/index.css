@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* Design tokens: soft sand-cream canvas, earthy olive/sage highlights, terracotta accents. */
+@theme {
+  --color-sand: #f4f4f3;
+  --color-olive: #6e7a6e;
+  --color-olive-dark: #586358;
+  --color-sage: #c0cfc0;
+  --color-terracotta: #dda28f;
+  --color-terracotta-light: #e5cec6;
+}
+
+@layer base {
+  body {
+    @apply bg-sand text-olive-dark antialiased;
+  }
+}
