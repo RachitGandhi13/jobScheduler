@@ -328,22 +328,27 @@ no server-side rendering, no separate backend-for-frontend.
   - `backend-api` — Web Service. **Language: Node** (not Docker — there's no Dockerfile in this
     repo). Build: `npm install && npm run build:api`. Start: `npm run start -w backend-api`.
     Health Check Path: `/health`.
-  - `worker-service` — **Cron Job**, not Background Worker. Render's Background Worker type has no
-    free tier (Starter is $7/mo minimum); Cron Job does. **Language: Node**. Build:
-    `npm install && npm run build:worker`. Command: `npm run start:once -w worker-service`.
-    Schedule: `*/1 * * * *` (every minute) — widen it if you want a coarser cadence. Only needs
-    `DATABASE_URL` — no HTTP layer, never reads `JWT_SECRET`. This runs `src/runOnce.ts`: claims and
-    executes everything currently due, looping until a pass claims nothing (bounded by
-    `MAX_RUN_MS`), then exits — instead of polling forever like a real Background Worker would. See
-    `DEVELOPMENT.md` for the trade-off (job pickup latency becomes "up to the schedule interval"
-    instead of ~1s) and why a single invocation loops rather than doing one pass.
-  - If you'd rather have the always-on Background Worker (lower latency, one $7/mo service instead
-    of this workaround): same Build Command, Start Command `npm run start -w worker-service`
-    (`src/index.ts`, the continuous poll loop) instead of `start:once`.
-  - `build:api`/`build:worker` (root `package.json`) build `packages/db` first, then the service —
-    required because `@scheduler/db`'s `package.json` points `main`/`types` at its compiled output,
-    not raw TypeScript, so plain `node dist/index.js` (what every entrypoint runs in production)
-    needs that output to exist. See `DEVELOPMENT.md` for what happens if you skip this.
+  - `build:api` (root `package.json`) builds `packages/db` first, then `backend-api` — required
+    because `@scheduler/db`'s `package.json` points `main`/`types` at its compiled output, not raw
+    TypeScript, so plain `node dist/index.js` (what every entrypoint runs in production) needs
+    that output to exist. See `DEVELOPMENT.md` for what happens if you skip this.
+- **`worker-service` runs on GitHub Actions instead of Render**, for genuinely zero cost. Render's
+  Background Worker has no free tier ($7/mo minimum) and Render Cron Jobs bill per second of
+  compute even if small — GitHub Actions is free with **no cost ceiling at all on a public repo**.
+  `.github/workflows/worker-cron.yml` runs on a `*/5 * * * *` schedule (plus `workflow_dispatch` for
+  manual runs from the Actions tab): checks out the repo, builds `packages/db` and `worker-service`,
+  and runs `node worker-service/dist/runOnce.js` — the same one-shot entrypoint described below,
+  just triggered by GitHub's scheduler instead of Render's.
+  - **Setup**: in the GitHub repo, go to Settings → Secrets and variables → Actions → New repository
+    secret, add `DATABASE_URL` with your Neon connection string. That's the only configuration
+    needed; the workflow file is already committed.
+  - `src/runOnce.ts` claims and executes everything currently due, looping until a pass claims
+    nothing (bounded by `MAX_RUN_MS`), then exits — instead of polling forever like a real
+    Background Worker would. Trade-off: job pickup latency becomes "up to the schedule interval"
+    (~5 min here) instead of ~1s. See `DEVELOPMENT.md` for why a single invocation loops rather than
+    doing one pass, and for the two Render alternatives (Cron Job, Background Worker) if you'd
+    rather keep everything on one platform and are fine with either the small per-run cost or the
+    flat $7/mo.
 - **Vercel**: `frontend-dashboard`, with Root Directory set to `frontend-dashboard` — this one's
   fine as a subdirectory root, since the frontend has no workspace-linked dependencies (only
   `react`/`react-dom`/`recharts`). Vercel auto-detects the Vite build (`vite build`, output `dist`).
@@ -358,11 +363,11 @@ no server-side rendering, no separate backend-for-frontend.
 | `backend-api` | Render | `MOCK_AUTH` | no | **omit entirely** — never set in production |
 | `backend-api` | Render | `WORKER_HEARTBEAT_TIMEOUT_MS` | no | default `15000` |
 | `backend-api` | Render | `ZOMBIE_CLEANUP_INTERVAL_MS` | no | default `10000` |
-| `worker-service` | Render | `DATABASE_URL` | yes | same Neon connection string |
-| `worker-service` | Render | `HEARTBEAT_INTERVAL_MS` | no | default `5000`; used by both entrypoints |
-| `worker-service` | Render | `MAX_CLAIM_PER_QUEUE` | no | default `5`; used by both entrypoints |
-| `worker-service` | Render | `MAX_RUN_MS` | no | default `45000`; **Cron Job mode only** |
-| `worker-service` | Render | `POLL_INTERVAL_MS` | no | default `1000`; **Background Worker mode only**, ignored by Cron Job mode |
+| `worker-service` | GitHub Actions | `DATABASE_URL` | yes | repo secret: Settings → Secrets and variables → Actions |
+| `worker-service` | (n/a, defaults used) | `HEARTBEAT_INTERVAL_MS` | no | default `5000` — only settable if self-hosting (Render/locally), GitHub Actions workflow doesn't pass it |
+| `worker-service` | (n/a, defaults used) | `MAX_CLAIM_PER_QUEUE` | no | default `5`, same as above |
+| `worker-service` | (n/a, defaults used) | `MAX_RUN_MS` | no | default `45000`, same as above — comfortably under the workflow's 5-min schedule |
+| `frontend-dashboard` | Vercel | `VITE_API_BASE_URL` | yes | Render `backend-api` URL + `/api` |
 | `frontend-dashboard` | Vercel | `VITE_API_BASE_URL` | yes | Render `backend-api` URL + `/api` |
 
 Each service's `.env.example` carries the same guidance inline.

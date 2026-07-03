@@ -1,0 +1,38 @@
+name: Worker cron tick
+
+on:
+  schedule:
+    # Every 5 minutes. GitHub Actions doesn't guarantee exact timing for
+    # scheduled workflows (runs can be delayed under load), which is fine
+    # here: runOnce.ts drains whatever backlog has built up since the last
+    # tick, not just what arrived in the last 5 minutes.
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+
+concurrency:
+  group: worker-cron
+  cancel-in-progress: false # let an in-progress run finish; queue, don't kill it
+
+jobs:
+  run-once:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Build shared db package
+        run: npm run build -w packages/db
+
+      - name: Build worker-service
+        run: npm run build -w worker-service
+
+      - name: Run one sweep (claim + execute due jobs, then exit)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: node worker-service/dist/runOnce.js
