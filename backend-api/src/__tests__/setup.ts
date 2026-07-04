@@ -8,6 +8,12 @@ import { createDb, type Database } from "@scheduler/db";
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgresql://localhost:5432/scheduler_test";
 
+// Route/middleware modules (rbac.ts, auth.ts, projectAccess.ts, ...) import
+// the shared `db` singleton from ../db.ts directly rather than taking it as a
+// parameter, and that module throws at import time if DATABASE_URL is unset.
+// Point it at the same test database so those modules are importable here too.
+process.env.DATABASE_URL ??= TEST_DATABASE_URL;
+
 let dbInstance: Database | null = null;
 
 /** Shared test DB connection -- lazily created so importing this file has no side effect. */

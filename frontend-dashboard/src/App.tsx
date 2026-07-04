@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api } from "./api/client";
+import { api, projectsApi } from "./api/client";
 import { AuthScreen } from "./components/AuthScreen";
 import { ClusterHealth } from "./components/ClusterHealth";
 import { GlassCard } from "./components/GlassCard";
@@ -17,8 +17,53 @@ const TITLES: Record<TabKey, string> = {
   jobs: "Job Explorer",
 };
 
+function NoProjectCard({ onCreated }: { onCreated: (project: { id: string; name: string }) => void }) {
+  const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleCreate() {
+    if (!name.trim()) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const res = await projectsApi.create(name.trim());
+      onCreated({ id: res.data.id, name: res.data.name });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <GlassCard className="mx-auto max-w-md p-8 text-center">
+      <h3 className="mb-2 text-lg font-semibold text-olive-dark">No project yet</h3>
+      <p className="mb-4 text-sm text-olive-dark/70">
+        Your organization doesn't have a project set up yet. Create one to start scheduling jobs.
+      </p>
+      <div className="flex gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Project name"
+          className="min-w-0 flex-1 rounded-lg border border-olive-dark/20 bg-white/80 px-3 py-2 text-sm"
+        />
+        <button
+          onClick={handleCreate}
+          disabled={creating || !name.trim()}
+          className="shrink-0 rounded-lg bg-olive px-4 py-2 text-sm font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+        >
+          {creating ? "Creating…" : "Create project"}
+        </button>
+      </div>
+      {error && <p className="mt-2 text-xs text-terracotta">{error}</p>}
+    </GlassCard>
+  );
+}
+
 function App() {
-  const { session, checking, login, signup, logout } = useAuth();
+  const { session, checking, login, signup, logout, switchProject } = useAuth();
   const [tab, setTab] = useState<TabKey>("overview");
 
   const hasProject = session?.project != null;
@@ -40,22 +85,23 @@ function App() {
   }
 
   return (
-    <Layout active={tab} onNavigate={setTab} title={TITLES[tab]} session={session} onLogout={logout}>
+    <Layout
+      active={tab}
+      onNavigate={setTab}
+      title={TITLES[tab]}
+      session={session}
+      onLogout={logout}
+      onSwitchProject={switchProject}
+    >
       {!hasProject ? (
-        <GlassCard className="mx-auto max-w-md p-8 text-center">
-          <h3 className="mb-2 text-lg font-semibold text-olive-dark">No project yet</h3>
-          <p className="text-sm text-olive-dark/70">
-            Your organization doesn't have a project set up. Create one via the API to start scheduling
-            jobs.
-          </p>
-        </GlassCard>
+        <NoProjectCard onCreated={switchProject} />
       ) : tab === "overview" ? (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           <ClusterHealth workers={workers} metrics={metrics} />
           <ThroughputChart metrics={metrics} />
         </div>
       ) : tab === "queues" ? (
-        <QueueMatrix queues={queues} loading={!queuesData} onChanged={refetchQueues} />
+        <QueueMatrix queues={queues} loading={!queuesData} role={session.role} onChanged={refetchQueues} />
       ) : (
         <JobExplorer queues={queues} />
       )}

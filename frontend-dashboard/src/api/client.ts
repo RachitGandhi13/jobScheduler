@@ -1,5 +1,5 @@
 import { loadSession, type AuthSession } from "../auth";
-import type { ApiErrorBody, Job, JobLog, Metrics, Pagination, Queue, Worker } from "../types";
+import type { ApiErrorBody, Job, JobLog, Metrics, Pagination, Project, Queue, QueueStats, Worker } from "../types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000/api";
 
@@ -36,6 +36,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
   return res.json() as Promise<T>;
 }
 
@@ -56,8 +60,27 @@ export interface ListJobsParams {
   to?: string;
 }
 
+export interface CreateQueueBody {
+  name: string;
+  priority?: number;
+  concurrencyLimit?: number;
+  retryPolicy?: { strategy?: string; maxRetries?: number; baseDelayMs?: number };
+}
+
+export interface UpdateQueueBody {
+  name?: string;
+  priority?: number;
+  concurrencyLimit?: number;
+  retryPolicy?: { strategy?: string; maxRetries?: number; baseDelayMs?: number };
+}
+
 export const api = {
   listQueues: () => request<{ data: Queue[] }>(projectPath("/queues")),
+  createQueue: (body: CreateQueueBody) =>
+    request<{ data: Queue }>(projectPath("/queues"), { method: "POST", body: JSON.stringify(body) }),
+  updateQueue: (queueId: string, body: UpdateQueueBody) =>
+    request<{ data: Queue }>(projectPath(`/queues/${queueId}`), { method: "PATCH", body: JSON.stringify(body) }),
+  getQueueStats: (queueId: string) => request<{ data: QueueStats }>(projectPath(`/queues/${queueId}/stats`)),
   pauseQueue: (queueId: string) =>
     request<{ data: Queue }>(projectPath(`/queues/${queueId}/pause`), { method: "POST" }),
   resumeQueue: (queueId: string) =>
@@ -74,6 +97,14 @@ export const api = {
   },
   getJobLogs: (jobId: string) => request<{ data: JobLog[] }>(projectPath(`/jobs/${jobId}/logs`)),
   retryJob: (jobId: string) => request<{ data: Job }>(projectPath(`/jobs/${jobId}/retry`), { method: "POST" }),
+};
+
+export const projectsApi = {
+  list: () => request<{ data: Project[] }>("/projects"),
+  create: (name: string) => request<{ data: Project }>("/projects", { method: "POST", body: JSON.stringify({ name }) }),
+  rename: (projectId: string, name: string) =>
+    request<{ data: Project }>(`/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  remove: (projectId: string) => request<void>(`/projects/${projectId}`, { method: "DELETE" }),
 };
 
 export interface SignupBody {

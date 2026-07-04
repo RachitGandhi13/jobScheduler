@@ -187,6 +187,7 @@ erDiagram
         uuid scheduled_job_id FK "nullable"
         uuid claimed_by FK "nullable -> workers"
         uuid batch_id "nullable, no FK table"
+        varchar idempotency_key "nullable, unique per queue_id"
         varchar type
         jsonb payload
         enum status "queued|scheduled|claimed|running|completed|failed"
@@ -263,21 +264,29 @@ belongs to a different organization returns `403`; one that doesn't exist return
 jobs are always reached through their parent project — a `queueId` belonging to another project
 returns `404` rather than leaking its existence.
 
+Signup auto-creates one project with one queue so a fresh workspace is immediately usable, but
+neither is a ceiling: `POST /api/projects` and `POST /api/projects/:projectId/queues` add more of
+each, gated by role (see "Role-based access control").
+
 ## Authentication
 
 Requests must carry `Authorization: Bearer <jwt>`, where the JWT payload is
 `{ userId, organizationId }` signed with `JWT_SECRET`. Get a token via:
 
 - `POST /api/auth/signup` — `{ email, password, organizationName, name? }`. Creates a `User`, an
-  `Organization` owned by them, a `Default Project`, and a `default` `Queue`, all in one
-  transaction, then returns `{ token, user, organization, project }`. `409 email_taken` if the
-  email is already registered.
+  `Organization` owned by them (as `role: "owner"`), a `Default Project`, and a `default` `Queue`,
+  all in one transaction, then returns `{ token, user, organization, project, role }`. `409
+  email_taken` if the email is already registered.
 - `POST /api/auth/login` — `{ email, password }`. Verifies the bcrypt hash and returns the same
-  shape, using the caller's first (oldest) organization membership. `401 invalid_credentials` on
-  any mismatch (never reveals which part was wrong).
-- `GET /api/auth/me` — requires a valid `Bearer` token; returns `{ user, organization, project }`
-  for session rehydration (`frontend-dashboard` calls this once on load to validate a stored
-  token before trusting it).
+  shape (including `role`, looked up from `organization_members`), using the caller's first
+  (oldest) organization membership. `401 invalid_credentials` on any mismatch (never reveals which
+  part was wrong).
+- `GET /api/auth/me` — requires a valid `Bearer` token; returns `{ user, organization, project,
+  role }` for session rehydration (`frontend-dashboard` calls this once on load to validate a
+  stored token before trusting it).
+
+`role` is one of `owner` / `admin` / `member`, from `organization_members.role` — see "Role-based
+access control" below for what each can do.
 
 `frontend-dashboard` uses this flow directly — see "Frontend dashboard" below.
 
@@ -285,6 +294,25 @@ For local scripting/testing without going through signup, `backend-api/.env` als
 `MOCK_AUTH=true`, which accepts `x-mock-user-id` / `x-mock-organization-id` headers instead of a
 JWT for any *existing* organization id. **Never set this in a deployed environment** — it lets
 anyone who knows an organization's id act as that org.
+
+## Role-based access control
+
+`organization_members.role` is `owner`, `admin`, or `member`. The `requireRole(...)` middleware
+(`backend-api/src/middleware/rbac.ts`) looks the caller's role up on every gated request and
+returns `403 insufficient_role` if it isn't in the allow-list, or `403 not_a_member` if the caller
+has no membership row in the organization at all.
+
+The split is by *structural* vs. *operational* change:
+
+| Action | Required role |
+|---|---|
+| Create / rename / delete a project | `owner`, `admin` |
+| Create / update a queue's config (name, priority, concurrency, retry policy) | `owner`, `admin` |
+| Pause / resume a queue, enqueue/retry/batch-create jobs | any role (`owner`, `admin`, `member`) |
+
+Structural changes reshape what exists; operational ones just push work through what's already
+there — an on-call `member` should be able to pause a misbehaving queue or retry a failed job
+without needing `admin` first.
 
 ## API
 
@@ -315,24 +343,38 @@ separation is what lets a future handler registry dispatch on `type` without tou
   "maxAttempts": 3,                       // optional, default 3
   "schedule": {                           // optional, default { "mode": "immediate" }
     "mode": "immediate"
-  }
+  },
+  "idempotencyKey": "order-123"           // optional, also accepted as an Idempotency-Key header
 }
 ```
 
-`schedule` supports three modes:
+`schedule` supports four modes:
 
-| mode        | extra fields                    | resulting `run_at`              | initial `status` |
-|-------------|----------------------------------|----------------------------------|-------------------|
-| `immediate` | —                                | now                               | `queued`          |
-| `delayed`   | `runAt` (ISO date, must be future) | `runAt`                        | `scheduled`       |
-| `recurring` | `cronExpression` (standard cron)   | first computed occurrence      | `scheduled`       |
+| mode        | extra fields                       | resulting `run_at`              | initial `status` |
+|-------------|-------------------------------------|----------------------------------|-------------------|
+| `immediate` | —                                    | now                              | `queued`          |
+| `delayed`   | `delayMs` (positive integer)         | now + `delayMs`                  | `scheduled`       |
+| `scheduled` | `runAt` (ISO date, must be future)    | `runAt`                          | `scheduled`       |
+| `recurring` | `cronExpression` (standard cron)     | first computed occurrence        | `scheduled`       |
+
+`delayed` and `scheduled` are deliberately distinct: `delayed` takes a relative offset from now
+("run in 10 minutes" — the caller doesn't compute a timestamp), `scheduled` takes an absolute
+point in time ("run at 2026-08-01T10:00:00Z"). Both land the job in `status: 'scheduled'`; only how
+`run_at` is expressed differs.
 
 For `recurring`, the cron expression is parsed with `cron-parser` and persisted on the job row as
 the baseline rule. This endpoint schedules only the **first** occurrence; `worker-service` chains
 every occurrence after that itself — see `DEVELOPMENT.md` for the mechanism.
 
-Response: `201 { "data": <job row> }`. `404 queue_not_found` if `queueId` isn't in this project.
-`400 run_at_in_past` if a delayed `runAt` isn't in the future. `400 invalid_cron_expression` if the
+If `idempotencyKey` is supplied and a job already exists on this queue with the same key, that
+existing job is returned as-is (`200`, not `201`) instead of inserting a duplicate — this is what
+makes retrying a `POST /jobs` call safe after a client-side timeout. Jobs created without a key are
+never deduped against anything (`jobs_queue_id_idempotency_key_idx` is a unique index on
+`(queue_id, idempotency_key)`, and Postgres treats every `NULL` as distinct).
+
+Response: `201 { "data": <job row> }` (or `200 { "data": <job row>, "idempotent": true }` on an
+idempotency-key replay). `404 queue_not_found` if `queueId` isn't in this project. `400
+run_at_in_past` if the resolved run time isn't in the future. `400 invalid_cron_expression` if the
 cron string doesn't parse.
 
 ### `GET /api/projects/:projectId/jobs`
@@ -374,6 +416,21 @@ claimable, and any existing `dead_letter_queue` row for it is cleared (it can de
 under a fresh set of attempts). `400 job_not_retryable` if the job isn't currently `failed`.
 Response: `200 { "data": <job row> }`.
 
+### `GET /api/projects`, `POST /api/projects`
+
+Org-scoped: list every project in the caller's organization, or create an additional one (`{
+"name": "..." }`, requires `owner`/`admin` — see "Role-based access control"). A project created
+this way starts with **zero** queues; add its first with `POST .../queues` below. Response:
+`200 { "data": <project row>[] }` / `201 { "data": <project row> }`.
+
+### `GET /api/projects/:projectId`, `PATCH /api/projects/:projectId`, `DELETE /api/projects/:projectId`
+
+Get, rename (`{ "name": "..." }`, `owner`/`admin`), or delete (`owner`/`admin`) one project.
+Deleting cascades through `queues → jobs → {executions, logs, dead_letter_queue}` and
+`scheduled_jobs`/`retry_policies` (all `ON DELETE CASCADE` in `schema.ts`) — the one genuinely
+destructive endpoint in the API. Response: `200 { "data": <project row> }` for GET/PATCH, `204` for
+DELETE.
+
 ### `POST /api/projects/:projectId/queues/:queueId/pause`
 
 Sets `queues.is_paused = true`. Jobs already `claimed`/`running` are unaffected — this only stops
@@ -393,6 +450,53 @@ object (`{ strategy, maxRetries, baseDelayMs }`) — it lives in its own `retry_
 
 ```json
 { "data": [{ "id": "...", "name": "emails", "isPaused": false, "retryPolicy": { "strategy": "exponential", "maxRetries": 3, "baseDelayMs": 500 } }] }
+```
+
+### `POST /api/projects/:projectId/queues`
+
+Adds a queue to an existing project (requires `owner`/`admin`) — the piece missing before this
+was added, when a project's only queue was the one made automatically at signup. Creates the queue
+and its 1:1 retry policy in one transaction.
+
+```jsonc
+// request body
+{
+  "name": "emails",
+  "priority": 0,                 // optional, default 0
+  "concurrencyLimit": 1,         // optional, default 1
+  "retryPolicy": {                // optional, defaults shown
+    "strategy": "exponential",   // "fixed" | "linear" | "exponential"
+    "maxRetries": 3,
+    "baseDelayMs": 1000
+  }
+}
+```
+
+Response: `201 { "data": <queue row, shaped like GET /queues> }`.
+
+### `PATCH /api/projects/:projectId/queues/:queueId`
+
+Updates the config fields that used to be frozen after creation — `name`, `priority`,
+`concurrencyLimit`, and the linked retry policy (any subset; requires `owner`/`admin`). Pause/
+resume stay their own endpoints above since they're a high-frequency operational toggle, not a
+config edit. Response: `200 { "data": <queue row> }`. `404 queue_not_found` if `queueId` isn't in
+this project.
+
+### `GET /api/projects/:projectId/queues/:queueId/stats`
+
+Per-queue breakdown — job counts by status, dead-letter total, and average duration of successful
+executions — as opposed to `GET /metrics` below, which only ever aggregates across every queue in
+the project.
+
+```json
+{
+  "data": {
+    "queueId": "...",
+    "jobCounts": { "queued": 2, "scheduled": 0, "claimed": 0, "running": 1, "completed": 40, "failed": 1 },
+    "deadLetterCount": 1,
+    "avgDurationMs": 842
+  }
+}
 ```
 
 ### `GET /api/projects/:projectId/jobs/:jobId/logs`
@@ -430,10 +534,15 @@ no server-side rendering, no separate backend-for-frontend.
 
 - **Auth**: `src/components/AuthScreen.tsx` (login/signup toggle) + `src/hooks/useAuth.ts` +
   `src/auth.ts` (session storage). Signing up calls `POST /api/auth/signup` and stores the
-  returned `{ token, user, organization, project }` in `localStorage`; every subsequent API call
-  sends `Authorization: Bearer <token>` (`src/api/client.ts`). On load, a stored token is validated
-  against `GET /api/auth/me` before being trusted — an expired or revoked token drops back to the
-  login screen instead of silently showing broken data.
+  returned `{ token, user, organization, project, role }` in `localStorage`; every subsequent API
+  call sends `Authorization: Bearer <token>` (`src/api/client.ts`). On load, a stored token is
+  validated against `GET /api/auth/me` before being trusted — an expired or revoked token drops
+  back to the login screen instead of silently showing broken data. `role` gates which project/
+  queue management actions the UI shows (see "Role-based access control" above).
+- **Account panel** (`src/components/AccountPanel.tsx`): lists every project in the org
+  (`GET /projects`), switches the dashboard's active project client-side (no re-login —
+  `useAuth`'s `switchProject` just repoints `session.project`), and — for `owner`/`admin` only —
+  renames, deletes, and creates projects. A `member` sees the same list read-only.
 - **Design tokens** live in `src/index.css` as a Tailwind v4 `@theme` block: `sand` (canvas),
   `olive`/`olive-dark` (brand/primary actions), `sage` (secondary highlight), `terracotta`/
   `terracotta-light` (alerts, dead-letter counts). Glass tiles are a shared `<GlassCard>` component
@@ -443,8 +552,10 @@ no server-side rendering, no separate backend-for-frontend.
   slide-in drawer behind a hamburger button below that breakpoint. Content grids collapse from
   3/2 columns down to 1 via Tailwind's responsive column classes, no separate mobile markup.
 - **Pages** (`src/App.tsx`, tab-based, no router — three tabs don't need one): **Overview**
-  (`ClusterHealth` + `ThroughputChart`), **Queues** (`QueueMatrix`, pause/resume wired to the
-  endpoints above), **Jobs** (`JobExplorer` + `JobDetailPanel` slide-out).
+  (`ClusterHealth` + `ThroughputChart`), **Queues** (`QueueMatrix` — pause/resume, a "+ New queue"
+  card and a per-card "Edit" form for `owner`/`admin`, and an on-demand "Stats" panel backed by
+  `GET .../queues/:queueId/stats` for every role), **Jobs** (`JobExplorer` + `JobDetailPanel`
+  slide-out, with a "Retry" action on failed jobs).
 - **Data fetching**: a small custom `usePolling` hook (5s for queues/workers/metrics, 4s for the
   job grid) — no React Query/SWR dependency, since three polled resources didn't justify one.
 - **Chart palette**: the throughput chart does *not* use the brand's exact
@@ -478,6 +589,14 @@ What's covered, each directly exercising a mechanic this project depends on for 
   recent heartbeat is aged past the timeout: asserts the sweep reverts it to `queued` with attempts
   *preserved* and marks the worker `offline`. A second case asserts a worker with a fresh heartbeat
   is left untouched.
+- **`backend-api/src/__tests__/rbac.test.ts`** — calls `requireRole(...)` directly against a real
+  `organization_members` row: asserts a listed role calls `next()` clean and stamps `req.context
+  .role`, an unlisted role calls `next(ApiError 403 insufficient_role)`, and a caller with no
+  membership row at all gets `403 not_a_member`.
+- **`backend-api/src/__tests__/idempotency.test.ts`** — asserts the `jobs_queue_id_idempotency_key
+  _idx` unique index actually enforces what `POST /jobs` depends on: a second insert reusing a key
+  on the same queue is rejected (Postgres `23505`), the same key on a *different* queue is not a
+  collision, and any number of keyless jobs on one queue coexist (`NULL <> NULL` in a unique index).
 
 Each test creates its own organization/project/queue/worker fixtures (unique names per run) and
 deletes them in `afterEach` — safe to run repeatedly with no manual cleanup.
@@ -548,3 +667,4 @@ Each service's `.env.example` carries the same guidance inline.
 - Job lifecycle diagram — see "Job lifecycle" above
 - ER overview — see "Data model" above (column-level detail: `packages/db/src/schema.ts`)
 - Design decisions & trade-offs — see `DEVELOPMENT.md`
+

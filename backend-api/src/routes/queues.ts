@@ -1,10 +1,11 @@
 import { Router } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { queues, retryPolicies } from "@scheduler/db";
+import { deadLetterQueue, jobExecutions, jobs, queues, retryPolicies } from "@scheduler/db";
 import { db } from "../db.js";
 import { ApiError } from "../lib/apiError.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { requireRole } from "../middleware/rbac.js";
 import { validate } from "../middleware/validate.js";
 
 export const queuesRouter = Router({ mergeParams: true });
@@ -12,6 +13,12 @@ export const queuesRouter = Router({ mergeParams: true });
 const queueParamsSchema = z.object({
   projectId: z.string().uuid(),
   queueId: z.string().uuid(),
+});
+
+const retryPolicyInputSchema = z.object({
+  strategy: z.enum(["fixed", "linear", "exponential"]).default("exponential"),
+  maxRetries: z.number().int().min(0).max(50).default(3),
+  baseDelayMs: z.number().int().min(0).default(1000),
 });
 
 /** Flattens the queue + its 1:1 retry_policies row into one wire shape, so the API's
@@ -41,6 +48,158 @@ queuesRouter.get(
       .where(eq(queues.projectId, projectId))
       .orderBy(desc(queues.priority));
     res.json({ data: rows.map(shapeQueue) });
+  }),
+);
+
+const createQueueBodySchema = z.object({
+  name: z.string().min(1).max(255),
+  priority: z.number().int().default(0),
+  concurrencyLimit: z.number().int().min(1).default(1),
+  retryPolicy: retryPolicyInputSchema.default({}),
+});
+
+/**
+ * POST /api/projects/:projectId/queues
+ *
+ * Adds a queue to an existing project -- the piece missing before this
+ * sprint, when a project's only queue was the one made automatically at
+ * signup. Queue + its 1:1 retry policy are created in one transaction.
+ */
+queuesRouter.post(
+  "/queues",
+  requireRole("owner", "admin"),
+  validate({ body: createQueueBodySchema }),
+  asyncHandler(async (req, res) => {
+    const projectId = req.context.projectId!;
+    const { name, priority, concurrencyLimit, retryPolicy } = req.body as z.infer<typeof createQueueBodySchema>;
+
+    const result = await db.transaction(async (tx) => {
+      const [queue] = await tx
+        .insert(queues)
+        .values({ projectId, name, priority, concurrencyLimit })
+        .returning();
+
+      const [policy] = await tx
+        .insert(retryPolicies)
+        .values({ queueId: queue.id, ...retryPolicy })
+        .returning();
+
+      return { queue, policy };
+    });
+
+    res.status(201).json({ data: shapeQueue({ queues: result.queue, retry_policies: result.policy }) });
+  }),
+);
+
+const updateQueueBodySchema = z.object({
+  name: z.string().min(1).max(255).optional(),
+  priority: z.number().int().optional(),
+  concurrencyLimit: z.number().int().min(1).optional(),
+  retryPolicy: retryPolicyInputSchema.partial().optional(),
+});
+
+/**
+ * PATCH /api/projects/:projectId/queues/:queueId
+ *
+ * Updates the config fields that were previously frozen after creation --
+ * priority, concurrency limit, and the linked retry policy (strategy, max
+ * retries, base delay). Pause/resume stay their own dedicated endpoints below
+ * since they're a distinct, high-frequency operational toggle rather than a
+ * config edit.
+ */
+queuesRouter.patch(
+  "/queues/:queueId",
+  requireRole("owner", "admin"),
+  validate({ params: queueParamsSchema, body: updateQueueBodySchema }),
+  asyncHandler(async (req, res) => {
+    const { projectId, queueId } = req.params as unknown as z.infer<typeof queueParamsSchema>;
+    const { name, priority, concurrencyLimit, retryPolicy } = req.body as z.infer<typeof updateQueueBodySchema>;
+
+    const [existing] = await db
+      .select()
+      .from(queues)
+      .where(and(eq(queues.id, queueId), eq(queues.projectId, projectId)))
+      .limit(1);
+    if (!existing) {
+      throw ApiError.notFound("queue_not_found", `Queue ${queueId} not found in this project`);
+    }
+
+    const queuePatch: Partial<typeof queues.$inferInsert> = { updatedAt: new Date() };
+    if (name !== undefined) queuePatch.name = name;
+    if (priority !== undefined) queuePatch.priority = priority;
+    if (concurrencyLimit !== undefined) queuePatch.concurrencyLimit = concurrencyLimit;
+
+    const [updatedQueue] = await db.update(queues).set(queuePatch).where(eq(queues.id, queueId)).returning();
+
+    let updatedPolicy = null;
+    if (retryPolicy && Object.keys(retryPolicy).length > 0) {
+      [updatedPolicy] = await db
+        .update(retryPolicies)
+        .set({ ...retryPolicy, updatedAt: new Date() })
+        .where(eq(retryPolicies.queueId, queueId))
+        .returning();
+    } else {
+      [updatedPolicy] = await db.select().from(retryPolicies).where(eq(retryPolicies.queueId, queueId)).limit(1);
+    }
+
+    res.json({ data: shapeQueue({ queues: updatedQueue, retry_policies: updatedPolicy ?? null }) });
+  }),
+);
+
+const JOB_STATUSES = ["queued", "scheduled", "claimed", "running", "completed", "failed"] as const;
+
+/**
+ * GET /api/projects/:projectId/queues/:queueId/stats
+ *
+ * Per-queue breakdown -- job counts by status, dead-letter total, and average
+ * duration of successful executions -- as opposed to GET /metrics, which only
+ * ever aggregates across every queue in the project.
+ */
+queuesRouter.get(
+  "/queues/:queueId/stats",
+  validate({ params: queueParamsSchema }),
+  asyncHandler(async (req, res) => {
+    const { projectId, queueId } = req.params as unknown as z.infer<typeof queueParamsSchema>;
+
+    const [queue] = await db
+      .select({ id: queues.id })
+      .from(queues)
+      .where(and(eq(queues.id, queueId), eq(queues.projectId, projectId)))
+      .limit(1);
+    if (!queue) {
+      throw ApiError.notFound("queue_not_found", `Queue ${queueId} not found in this project`);
+    }
+
+    const jobCounts = Object.fromEntries(JOB_STATUSES.map((s) => [s, 0])) as Record<
+      (typeof JOB_STATUSES)[number],
+      number
+    >;
+    const counts = await db
+      .select({ status: jobs.status, count: sql<number>`count(*)::int` })
+      .from(jobs)
+      .where(eq(jobs.queueId, queueId))
+      .groupBy(jobs.status);
+    for (const row of counts) jobCounts[row.status] = row.count;
+
+    const [dlq] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(deadLetterQueue)
+      .where(eq(deadLetterQueue.queueId, queueId));
+
+    const [durations] = await db
+      .select({ avgDurationMs: sql<number | null>`avg(${jobExecutions.durationMs})::int` })
+      .from(jobExecutions)
+      .innerJoin(jobs, eq(jobExecutions.jobId, jobs.id))
+      .where(and(eq(jobs.queueId, queueId), eq(jobExecutions.status, "success")));
+
+    res.json({
+      data: {
+        queueId,
+        jobCounts,
+        deadLetterCount: dlq?.count ?? 0,
+        avgDurationMs: durations?.avgDurationMs ?? null,
+      },
+    });
   }),
 );
 

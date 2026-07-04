@@ -2,6 +2,7 @@ export type JobStatus = "queued" | "scheduled" | "claimed" | "running" | "comple
 export type RetryStrategy = "fixed" | "linear" | "exponential";
 export type WorkerStatus = "idle" | "busy" | "offline";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type OrganizationRole = "owner" | "admin" | "member";
 
 export interface Job {
   id: string;
@@ -34,6 +35,23 @@ export interface Queue {
   createdAt: string;
   updatedAt: string;
   retryPolicy: { strategy: RetryStrategy; maxRetries: number; baseDelayMs: number } | null;
+}
+
+export interface Project {
+  id: string;
+  organizationId: string;
+  name: string;
+  ownerId: string;
+  apiKey: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface QueueStats {
+  queueId: string;
+  jobCounts: Record<JobStatus, number>;
+  deadLetterCount: number;
+  avgDurationMs: number | null;
 }
 
 export interface Worker {

@@ -10,10 +10,11 @@ interface LayoutProps {
   title: string;
   session: AuthSession;
   onLogout: () => void;
+  onSwitchProject: (project: { id: string; name: string }) => void;
   children: ReactNode;
 }
 
-export function Layout({ active, onNavigate, title, session, onLogout, children }: LayoutProps) {
+export function Layout({ active, onNavigate, title, session, onLogout, onSwitchProject, children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
 
@@ -43,7 +44,12 @@ export function Layout({ active, onNavigate, title, session, onLogout, children 
       </div>
 
       {accountOpen && (
-        <AccountPanel session={session} onLogout={onLogout} onClose={() => setAccountOpen(false)} />
+        <AccountPanel
+          session={session}
+          onLogout={onLogout}
+          onClose={() => setAccountOpen(false)}
+          onSwitchProject={onSwitchProject}
+        />
       )}
     </div>
   );

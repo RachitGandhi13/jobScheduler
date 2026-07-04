@@ -46,5 +46,16 @@ export function useAuth() {
     setSession(null);
   }, []);
 
-  return { session, checking, login, signup, logout };
+  // Swaps which project subsequent API calls are scoped to (see api/client.ts's
+  // projectPath), without a full re-login -- the token/org/role don't change.
+  const switchProject = useCallback((project: { id: string; name: string }) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, project };
+      saveSession(next);
+      return next;
+    });
+  }, []);
+
+  return { session, checking, login, signup, logout, switchProject };
 }

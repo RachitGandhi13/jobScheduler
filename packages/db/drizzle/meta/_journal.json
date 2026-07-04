@@ -15,6 +15,13 @@
       "when": 1783123770529,
       "tag": "0001_past_vanisher",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783178451406,
+      "tag": "0002_add_job_idempotency_key",
+      "breakpoints": true
     }
   ]
 }

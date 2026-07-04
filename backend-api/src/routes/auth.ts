@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { organizationMembers, organizations, projects, queues, retryPolicies, users } from "@scheduler/db";
@@ -108,6 +108,7 @@ authRouter.post(
         user: { id: result.user.id, email: result.user.email, name: result.user.name },
         organization: { id: result.organization.id, name: result.organization.name },
         project: { id: result.project.id, name: result.project.name },
+        role: "owner",
       },
     });
   }),
@@ -131,7 +132,7 @@ authRouter.post(
     }
 
     const [membership] = await db
-      .select({ organizationId: organizationMembers.organizationId })
+      .select({ organizationId: organizationMembers.organizationId, role: organizationMembers.role })
       .from(organizationMembers)
       .where(eq(organizationMembers.userId, user.id))
       .orderBy(asc(organizationMembers.createdAt))
@@ -162,6 +163,7 @@ authRouter.post(
         user: { id: user.id, email: user.email, name: user.name },
         organization: { id: organization.id, name: organization.name },
         project: project ? { id: project.id, name: project.name } : null,
+        role: membership.role,
       },
     });
   }),
@@ -182,6 +184,11 @@ authRouter.get(
       .where(eq(projects.organizationId, organizationId))
       .orderBy(asc(projects.createdAt))
       .limit(1);
+    const [membership] = await db
+      .select({ role: organizationMembers.role })
+      .from(organizationMembers)
+      .where(and(eq(organizationMembers.organizationId, organizationId), eq(organizationMembers.userId, userId)))
+      .limit(1);
 
     if (!user || !organization) {
       throw ApiError.unauthorized("invalid_session", "User or organization from this token no longer exists");
@@ -192,6 +199,7 @@ authRouter.get(
         user: { id: user.id, email: user.email, name: user.name },
         organization: { id: organization.id, name: organization.name },
         project: project ? { id: project.id, name: project.name } : null,
+        role: membership?.role ?? "member",
       },
     });
   }),

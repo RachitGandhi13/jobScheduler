@@ -15,10 +15,17 @@ export const jobsRouter = Router({ mergeParams: true });
  * Controls when a job first becomes eligible for claiming; independent of
  * `type`, which names the job *handler* (e.g. "send-welcome-email") a future
  * handler registry will dispatch on.
+ *
+ * "delayed" and "scheduled" are deliberately distinct: delayed takes a
+ * relative offset from now ("run in 10 minutes" -- the caller doesn't need to
+ * compute a timestamp), scheduled takes an absolute point in time ("run at
+ * 2026-08-01T10:00:00Z"). Both land the job in status='scheduled' with a
+ * concrete run_at; only how that run_at is expressed differs.
  */
 const scheduleSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("immediate") }),
-  z.object({ mode: z.literal("delayed"), runAt: z.coerce.date() }),
+  z.object({ mode: z.literal("delayed"), delayMs: z.number().int().positive() }),
+  z.object({ mode: z.literal("scheduled"), runAt: z.coerce.date() }),
   z.object({ mode: z.literal("recurring"), cronExpression: z.string().min(1) }),
 ]);
 
@@ -31,6 +38,10 @@ const createJobBodySchema = z.object({
   // policy's max_retries below, rather than silently overriding it.
   maxAttempts: z.number().int().min(1).max(50).optional(),
   schedule: scheduleSchema.default({ mode: "immediate" }),
+  // Optional client-supplied dedupe key (also accepted via the
+  // Idempotency-Key header; the body field wins if both are sent). Scoped to
+  // this queue -- see schema.ts's jobs_queue_id_idempotency_key_idx.
+  idempotencyKey: z.string().min(1).max(255).optional(),
 });
 
 /**
@@ -44,26 +55,36 @@ const createJobBodySchema = z.object({
  *   maxAttempts?: number,       // default: the owning queue's retry_policies.max_retries
  *   schedule?:
  *     | { mode: "immediate" }
- *     | { mode: "delayed", runAt: string (ISO date) }
+ *     | { mode: "delayed", delayMs: number }
+ *     | { mode: "scheduled", runAt: string (ISO date) }
  *     | { mode: "recurring", cronExpression: string }
+ *   idempotencyKey?: string,    // also accepted as an Idempotency-Key header
  * }
  *
  * immediate  -> run_at = now(), status = 'queued' (claimable this instant).
- * delayed    -> run_at = schedule.runAt (must be future), status = 'scheduled'.
+ * delayed    -> run_at = now() + schedule.delayMs, status = 'scheduled'.
+ * scheduled  -> run_at = schedule.runAt (must be future), status = 'scheduled'.
  * recurring  -> creates a scheduled_jobs row (the baseline rule: queue, type,
  *               payload template, cron expression) and a jobs row for its
  *               first occurrence, linked via scheduled_job_id. Only the first
  *               occurrence is created here; worker-service chains every one
  *               after that (see DEVELOPMENT.md).
+ *
+ * If idempotencyKey is supplied and a job already exists on this queue with
+ * the same key, that existing job is returned as-is (200, not 201) instead of
+ * inserting a duplicate -- makes retrying a POST /jobs call after a client
+ * timeout safe. Jobs created without a key are never deduped against each
+ * other or anything else (see schema.ts).
  */
 jobsRouter.post(
   "/jobs",
   validate({ body: createJobBodySchema }),
   asyncHandler(async (req, res) => {
     const projectId = req.context.projectId!;
-    const { type, queueId, payload, priority, maxAttempts, schedule } = req.body as z.infer<
+    const { type, queueId, payload, priority, maxAttempts, schedule, idempotencyKey: bodyKey } = req.body as z.infer<
       typeof createJobBodySchema
     >;
+    const idempotencyKey = bodyKey ?? req.header("idempotency-key");
 
     const [queue] = await db
       .select()
@@ -75,68 +96,108 @@ jobsRouter.post(
       throw ApiError.notFound("queue_not_found", `Queue ${queueId} not found in this project`);
     }
 
+    if (idempotencyKey) {
+      const [existing] = await db
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.queueId, queueId), eq(jobs.idempotencyKey, idempotencyKey)))
+        .limit(1);
+      if (existing) {
+        return res.status(200).json({ data: existing, idempotent: true });
+      }
+    }
+
     const [retryPolicy] = await db.select().from(retryPolicies).where(eq(retryPolicies.queueId, queueId)).limit(1);
     const resolvedMaxAttempts = maxAttempts ?? retryPolicy?.maxRetries ?? 3;
 
-    if (schedule.mode === "immediate") {
-      const [job] = await db
-        .insert(jobs)
-        .values({ queueId, type, payload, priority, maxAttempts: resolvedMaxAttempts, runAt: new Date(), status: "queued" })
-        .returning();
-      return res.status(201).json({ data: job });
-    }
-
-    if (schedule.mode === "delayed") {
-      if (schedule.runAt.getTime() <= Date.now()) {
-        throw ApiError.badRequest("run_at_in_past", "schedule.runAt must be in the future");
+    try {
+      if (schedule.mode === "immediate") {
+        const [job] = await db
+          .insert(jobs)
+          .values({
+            queueId,
+            type,
+            payload,
+            priority,
+            maxAttempts: resolvedMaxAttempts,
+            runAt: new Date(),
+            status: "queued",
+            idempotencyKey,
+          })
+          .returning();
+        return res.status(201).json({ data: job });
       }
-      const [job] = await db
-        .insert(jobs)
-        .values({
-          queueId,
-          type,
-          payload,
-          priority,
-          maxAttempts: resolvedMaxAttempts,
-          runAt: schedule.runAt,
-          status: "scheduled",
-        })
-        .returning();
-      return res.status(201).json({ data: job });
+
+      if (schedule.mode === "delayed" || schedule.mode === "scheduled") {
+        const runAt = schedule.mode === "delayed" ? new Date(Date.now() + schedule.delayMs) : schedule.runAt;
+        if (runAt.getTime() <= Date.now()) {
+          throw ApiError.badRequest("run_at_in_past", "The resolved run time must be in the future");
+        }
+        const [job] = await db
+          .insert(jobs)
+          .values({
+            queueId,
+            type,
+            payload,
+            priority,
+            maxAttempts: resolvedMaxAttempts,
+            runAt,
+            status: "scheduled",
+            idempotencyKey,
+          })
+          .returning();
+        return res.status(201).json({ data: job });
+      }
+
+      // recurring
+      const firstRunAt = getNextCronRun(schedule.cronExpression);
+
+      const [job] = await db.transaction(async (tx) => {
+        const [rule] = await tx
+          .insert(scheduledJobs)
+          .values({
+            queueId,
+            type,
+            payload,
+            priority,
+            maxAttempts: resolvedMaxAttempts,
+            cronExpression: schedule.cronExpression,
+          })
+          .returning();
+
+        return tx
+          .insert(jobs)
+          .values({
+            queueId,
+            type,
+            payload,
+            priority,
+            maxAttempts: resolvedMaxAttempts,
+            runAt: firstRunAt,
+            status: "scheduled",
+            scheduledJobId: rule.id,
+            idempotencyKey,
+          })
+          .returning();
+      });
+
+      res.status(201).json({ data: job });
+    } catch (err) {
+      // Unique violation on (queue_id, idempotency_key): a concurrent request
+      // with the same key won the race between our pre-check and this insert.
+      // Return the row it created rather than a 500/409.
+      if (idempotencyKey && (err as { code?: string }).code === "23505") {
+        const [existing] = await db
+          .select()
+          .from(jobs)
+          .where(and(eq(jobs.queueId, queueId), eq(jobs.idempotencyKey, idempotencyKey)))
+          .limit(1);
+        if (existing) {
+          return res.status(200).json({ data: existing, idempotent: true });
+        }
+      }
+      throw err;
     }
-
-    // recurring
-    const firstRunAt = getNextCronRun(schedule.cronExpression);
-
-    const [job] = await db.transaction(async (tx) => {
-      const [rule] = await tx
-        .insert(scheduledJobs)
-        .values({
-          queueId,
-          type,
-          payload,
-          priority,
-          maxAttempts: resolvedMaxAttempts,
-          cronExpression: schedule.cronExpression,
-        })
-        .returning();
-
-      return tx
-        .insert(jobs)
-        .values({
-          queueId,
-          type,
-          payload,
-          priority,
-          maxAttempts: resolvedMaxAttempts,
-          runAt: firstRunAt,
-          status: "scheduled",
-          scheduledJobId: rule.id,
-        })
-        .returning();
-    });
-
-    res.status(201).json({ data: job });
   }),
 );
 

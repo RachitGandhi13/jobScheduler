@@ -232,6 +232,49 @@ this failure mode) — the price of putting the queue in the same database as ev
   import always works, since it just grabs whatever `module.exports` is) and call
   `bcrypt.hash(...)` / `bcrypt.compare(...)`. Caught by actually running signup against a live
   database rather than trusting `tsc --noEmit`, which had already passed.
+- **Project/queue CRUD**, closing the gap called out above ("multi-project-per-org... is the
+  natural next increment"). `POST /api/projects` and `POST /api/projects/:projectId/queues` let an
+  org grow past the one project/one queue signup creates; `PATCH` on both lets `priority`/
+  `concurrencyLimit`/`retryPolicy` (previously frozen after creation) and a project's `name` be
+  changed later. Kept structurally identical to every existing route: same `requireProjectAccess`
+  tenant check, same `validate()`/`ApiError` conventions, queue creation still transactionally
+  pairs a `queues` row with its 1:1 `retry_policies` row exactly like signup does. Verified live
+  against a real local Neon-shaped Postgres: created a second project and a second queue, updated
+  the queue's retry policy, confirmed `GET /queues` reflected the change, then exercised the same
+  flow through the actual dashboard UI (Playwright-driven) before considering it done.
+- **RBAC enforcement, not just the schema.** `organization_members.role` existed from Phase 1 but
+  nothing read it — any authenticated member could do anything in their org. `requireRole(...)`
+  (`backend-api/src/middleware/rbac.ts`) looks the role up per-request and gates *structural*
+  changes (project/queue create, rename, delete, config update) to `owner`/`admin`, leaving
+  *operational* actions (pause/resume, enqueue, batch-create, retry) open to every role — an
+  on-call `member` shouldn't need `admin` just to pause a misbehaving queue during an incident.
+  Testing this hit the same asyncHandler gotcha the route layer relies on in production:
+  `asyncHandler`'s wrapper (`fn(req, res, next).catch(next)`) doesn't return the inner promise, so
+  `await requireRole(...)(req, res, next)` in a test resolves before the async DB lookup or `next()`
+  call ever happens. Fixed in the test, not the middleware (production code is driven by Express's
+  own request/response cycle, which never awaits a middleware's return value either) — the test
+  instead wraps `next` in a `Promise` that resolves when *it* is called, and awaits that.
+- **`delayed` and `scheduled` are two schedule modes, not one.** The brief names both explicitly;
+  the original implementation only had `delayed` (absolute `runAt`). Rather than leave `scheduled`
+  a no-op alias, `delayed` was redefined as a *relative* offset (`delayMs` — "run in 10 minutes,"
+  no timestamp math for the caller) and `scheduled` took over the original *absolute* timestamp
+  behavior (`runAt` — "run at 2026-08-01T10:00:00Z"). Both still land the job in
+  `status='scheduled'`; only how `run_at` is computed differs. This is a breaking change to the API
+  shape of the old `delayed` mode, judged acceptable since nothing in `frontend-dashboard` created
+  jobs through a schedule-mode UI to begin with (job creation was API/curl-only) — verified by
+  grepping the frontend for `schedule.mode`/`"delayed"` before making the change, which found none.
+- **Idempotency key is per-queue, not global, and jobs without one are never deduped.**
+  `jobs.idempotency_key` plus a unique index on `(queue_id, idempotency_key)` gives `POST /jobs` a
+  cheap way to make retrying a timed-out request safe: same key on the same queue returns the
+  existing job (`200`) instead of inserting a duplicate. Chose a DB constraint over an in-memory or
+  Redis-backed dedupe cache since Postgres already treats every `NULL` as distinct in a unique
+  index — jobs created without a key (the common case) need zero special-casing to avoid colliding
+  with each other. The route both pre-checks (avoids a wasted insert attempt on the common
+  retry-after-timeout path) and catches the constraint violation (`23505`) around the actual
+  insert, since a genuine race between two concurrent requests with the same key can still slip
+  past the pre-check — confirmed both paths return the same existing row, not a 409/500, via a live
+  `curl` sequence (first call `201`, replayed call `200` with `idempotent: true`, same job `id`
+  both times).
 
 ## Design trace: queue pausing × cron evaluation at the DB level
 

@@ -215,6 +215,11 @@ export const jobs = pgTable("jobs", {
   // (including its cron expression) lives in scheduled_jobs, not here.
   scheduledJobId: uuid("scheduled_job_id").references(() => scheduledJobs.id, { onDelete: "set null" }),
   batchId: uuid("batch_id"),
+  // Optional client-supplied dedupe key, scoped per-queue. Postgres treats
+  // every NULL as distinct in a unique index, so jobs that don't opt in never
+  // collide with each other -- only two inserts on the same queue reusing the
+  // same key do.
+  idempotencyKey: varchar("idempotency_key", { length: 255 }),
   maxAttempts: integer("max_attempts").default(3).notNull(),
   attempts: integer("attempts").default(0).notNull(),
   claimedBy: uuid("claimed_by").references(() => workers.id, { onDelete: "set null" }),
@@ -231,6 +236,7 @@ export const jobs = pgTable("jobs", {
   queuePollIdx: index("jobs_queue_id_status_run_at_idx").on(table.queueId, table.status, table.runAt),
   batchIdx: index("jobs_batch_id_idx").on(table.batchId),
   scheduledJobIdx: index("jobs_scheduled_job_id_idx").on(table.scheduledJobId),
+  idempotencyIdx: uniqueIndex("jobs_queue_id_idempotency_key_idx").on(table.queueId, table.idempotencyKey),
 }));
 
 // --- Job Executions ------------------------------------------------------------

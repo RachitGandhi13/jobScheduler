@@ -1,3 +1,5 @@
+import type { OrganizationRole } from "./types";
+
 const STORAGE_KEY = "scheduler-dashboard-session";
 
 export interface AuthSession {
@@ -5,6 +7,7 @@ export interface AuthSession {
   user: { id: string; email: string; name: string | null };
   organization: { id: string; name: string };
   project: { id: string; name: string } | null;
+  role: OrganizationRole;
 }
 
 export function loadSession(): AuthSession | null {

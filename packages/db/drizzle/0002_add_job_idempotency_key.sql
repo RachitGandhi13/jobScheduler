@@ -1,0 +1,2 @@
+ALTER TABLE "jobs" ADD COLUMN "idempotency_key" varchar(255);--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "jobs_queue_id_idempotency_key_idx" ON "jobs" USING btree ("queue_id","idempotency_key");
