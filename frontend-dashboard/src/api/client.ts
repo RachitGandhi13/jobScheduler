@@ -60,6 +60,22 @@ export interface ListJobsParams {
   to?: string;
 }
 
+export type CreateJobSchedule =
+  | { mode: "immediate" }
+  | { mode: "delayed"; delayMs: number }
+  | { mode: "scheduled"; runAt: string }
+  | { mode: "recurring"; cronExpression: string };
+
+export interface CreateJobBody {
+  type: string;
+  queueId: string;
+  payload?: Record<string, unknown>;
+  priority?: number;
+  maxAttempts?: number;
+  schedule?: CreateJobSchedule;
+  idempotencyKey?: string;
+}
+
 export interface CreateQueueBody {
   name: string;
   priority?: number;
@@ -97,6 +113,8 @@ export const api = {
   },
   getJobLogs: (jobId: string) => request<{ data: JobLog[] }>(projectPath(`/jobs/${jobId}/logs`)),
   retryJob: (jobId: string) => request<{ data: Job }>(projectPath(`/jobs/${jobId}/retry`), { method: "POST" }),
+  createJob: (body: CreateJobBody) =>
+    request<{ data: Job; idempotent?: boolean }>(projectPath("/jobs"), { method: "POST", body: JSON.stringify(body) }),
 };
 
 export const projectsApi = {

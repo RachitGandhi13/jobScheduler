@@ -555,7 +555,9 @@ no server-side rendering, no separate backend-for-frontend.
   (`ClusterHealth` + `ThroughputChart`), **Queues** (`QueueMatrix` — pause/resume, a "+ New queue"
   card and a per-card "Edit" form for `owner`/`admin`, and an on-demand "Stats" panel backed by
   `GET .../queues/:queueId/stats` for every role), **Jobs** (`JobExplorer` + `JobDetailPanel`
-  slide-out, with a "Retry" action on failed jobs).
+  slide-out, with a "Retry" action on failed jobs, and a "+ Create job" button opening
+  `CreateJobModal` — the one form covering all four `schedule` modes, a JSON payload textarea, and
+  an optional idempotency key, so enqueuing a job no longer requires the API directly).
 - **Data fetching**: a small custom `usePolling` hook (5s for queues/workers/metrics, 4s for the
   job grid) — no React Query/SWR dependency, since three polled resources didn't justify one.
 - **Chart palette**: the throughput chart does *not* use the brand's exact

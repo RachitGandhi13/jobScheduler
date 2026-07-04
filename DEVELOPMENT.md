@@ -276,6 +276,17 @@ this failure mode) — the price of putting the queue in the same database as ev
   `curl` sequence (first call `201`, replayed call `200` with `idempotent: true`, same job `id`
   both times).
 
+- **Added a "Create job" form to the dashboard (`CreateJobModal.tsx`).** Job creation had been
+  API/curl-only since Phase 3 — a deliberate scope call at the time (see the request-logging /
+  batch-endpoint priority list earlier in this log), but it meant a fresh signup's Job Explorer was
+  permanently empty for anyone not calling the API directly, which is exactly the confusion that
+  prompted adding this. One form covers all four `schedule` modes (immediate/delayed/scheduled/
+  recurring) with conditional fields per mode, a JSON payload textarea (validated client-side
+  before submit so a malformed payload never reaches the API), and the optional idempotency key.
+  Verified live: created one `immediate` and one `delayed` job through the actual form (Playwright-
+  driven, not just typechecked), confirmed both appeared in the Job Explorer with the correct
+  `status`/`run_at`.
+
 ## Design trace: queue pausing × cron evaluation at the DB level
 
 These two features never touch each other directly, but they interact through the one query both

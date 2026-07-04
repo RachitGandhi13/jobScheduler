@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api/client";
 import { usePolling } from "../hooks/usePolling";
 import type { Job, JobStatus, Queue } from "../types";
+import { CreateJobModal } from "./CreateJobModal";
 import { GlassCard } from "./GlassCard";
 import { JobDetailPanel } from "./JobDetailPanel";
 import { Toast } from "./Toast";
@@ -28,6 +29,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const pageSize = 10;
 
   const { data, loading, refetch } = usePolling(
@@ -88,8 +90,14 @@ export function JobExplorer({ queues }: JobExplorerProps) {
         </select>
 
         <button
-          onClick={() => refetch()}
+          onClick={() => setCreating(true)}
           className="ml-auto rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white transition hover:bg-olive-dark"
+        >
+          + Create job
+        </button>
+        <button
+          onClick={() => refetch()}
+          className="rounded-lg bg-white/60 px-3 py-1.5 text-sm font-medium text-olive-dark transition hover:bg-white/80"
         >
           Refresh
         </button>
@@ -174,6 +182,18 @@ export function JobExplorer({ queues }: JobExplorerProps) {
       )}
 
       <JobDetailPanel job={selectedJob} onClose={() => setSelectedJob(null)} />
+      {creating && (
+        <CreateJobModal
+          queues={queues ?? []}
+          onClose={() => setCreating(false)}
+          onCreated={(message) => {
+            setCreating(false);
+            setToast(message);
+            setPage(1);
+            refetch();
+          }}
+        />
+      )}
       {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
   );
