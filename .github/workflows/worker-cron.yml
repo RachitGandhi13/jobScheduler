@@ -35,4 +35,11 @@ jobs:
       - name: Run one sweep (claim + execute due jobs, then exit)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Optional -- enables a real AI-generated DLQ failure summary
+          # (claude-haiku-4-5) instead of the zero-cost heuristic fallback in
+          # worker-service/src/failureSummary.ts. Leave the repo secret unset
+          # entirely to keep this project zero-cost; ${{ secrets.X }} resolves
+          # to an empty string when a secret doesn't exist, which is exactly
+          # what failureSummary.ts's `if (apiKey)` check treats as "unset".
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: node worker-service/dist/runOnce.js
