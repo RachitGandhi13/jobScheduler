@@ -8,6 +8,13 @@
       "when": 1783107457302,
       "tag": "0000_mighty_purple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783123770529,
+      "tag": "0001_past_vanisher",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,10 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import { pinoHttp } from "pino-http";
 import { db } from "./db.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { logger } from "./logger.js";
 import { startZombieCleanup } from "./monitors/zombieCleanup.js";
 import { apiRouter } from "./routes/index.js";
 
@@ -18,6 +20,15 @@ const CORS_ORIGINS = (process.env.CORS_ORIGIN ?? "http://localhost:5173")
 
 const app = express();
 app.use(cors({ origin: CORS_ORIGINS }));
+// Structured request log: method, path, status code, response time, on every
+// call. /health is excluded -- it's Render's own liveness probe hitting this
+// every few seconds, not a real request worth tracing.
+app.use(
+  pinoHttp({
+    logger,
+    autoLogging: { ignore: (req) => req.url === "/health" },
+  }),
+);
 app.use(express.json());
 
 app.get("/health", (_req, res) => {

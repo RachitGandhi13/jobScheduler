@@ -62,6 +62,47 @@ this failure mode) — the price of putting the queue in the same database as ev
 
 ## Design decisions log
 
+- **Schema renormalization: `retry_policies`, `worker_heartbeats`, `scheduled_jobs` split out from
+  `queues`/`workers`/`jobs`.** The brief names these as their own entities; they'd been collapsed
+  into columns for simplicity. The migration (`packages/db/drizzle/0001_past_vanisher.sql`,
+  hand-edited after `drizzle-kit generate`) backfills each before dropping the old columns —
+  `retry_policies` from every existing queue's retry columns, `worker_heartbeats` from each
+  worker's last known heartbeat, and `scheduled_jobs` by grouping existing recurring jobs on
+  `(queue_id, type, cron_expression)` so a chained series collapses to *one* rule row, not one per
+  occurrence (the chaining logic had been copying `cron_expression` onto every child job, so a
+  naive per-row backfill would have manufactured a duplicate rule per occurrence). Verified against
+  a live local database with real pre-existing data before this was considered safe to write up
+  as "done" — see the migration's own history in this log for what a plain `drizzle-kit generate`
+  gets wrong by default (no data backfill at all).
+- **`jobs.status`/`run_at`/`queue_id` and their composite index were left untouched.** The brief
+  asked to isolate scheduled_jobs "away from the core hot operational data table" — the *rule*
+  (cron expression, payload template) moved out via `jobs.scheduled_job_id`, but the columns
+  `claim.ts`'s `SELECT ... FOR UPDATE SKIP LOCKED` actually filters and sorts on could not move
+  without invalidating `jobs_queue_id_status_run_at_idx`, the one index this project is built
+  around. Normalizing the rule away from the hot path and keeping the hot path's own columns in
+  place are the same goal, not in tension.
+- **`worker_heartbeats` is genuinely insert-only, not a column with a JOIN dressed up as one.**
+  Considered keeping a denormalized `workers.last_heartbeat_at` fast-path column alongside the new
+  history table (cheaper zombie-sweep queries), but at this project's worker-fleet scale a `GROUP
+  BY worker_id` over the full history is not a real cost, and keeping both would mean two sources
+  of truth that could drift. `GET /workers` and the zombie sweep both compute "latest heartbeat"
+  live. Known trade-off, not fixed here: this table grows unbounded (1 row per worker per
+  `HEARTBEAT_INTERVAL_MS`) — a retention job is the natural next step.
+- **The manual retry endpoint stayed at `/api/projects/:projectId/jobs/:jobId/retry`, not the bare
+  `/api/jobs/:jobId/retry` the brief described.** Every other job route is tenant-scoped through
+  `requireProjectAccess`; a bare `/api/jobs/:jobId/retry` would need its own ad hoc
+  ownership check to avoid one org retrying another's job, duplicating logic that already exists
+  and is already tested. Consistency with the rest of the API won over matching the literal path.
+- **Two more gotchas from the same family as `bcryptjs` and `cron-parser` earlier in this log**:
+  `pino-http`'s default export isn't callable under this project's module resolution (its `.d.ts`
+  also exports a named `pinoHttp`, which is — same fix pattern, different package) — caught by
+  `tsc`, not by running anything. More seriously, **Vitest silently double-ran every test** because
+  `npm run build` compiles `src/__tests__` into `dist/__tests__` (test files aren't excluded from
+  the `tsc` build, since `typecheck` needs to still cover them), and Vitest picked up both the
+  `.ts` source and the compiled `.js` sitting in a stale `dist/` from an earlier build. Fixed with
+  an explicit `exclude: ["**/dist/**"]` in both `vitest.config.ts` files. Caught by noticing the
+  reported test count (4, then 8) didn't match the number of `it(...)` blocks actually written —
+  a reminder that a passing count is only informative if you know what count to expect.
 - **`backend-api` had zero CORS configuration until the Vercel↔Render deploy actually surfaced
   it.** The frontend and backend running on different origins (a `vercel.app` domain calling an
   `onrender.com` domain) is a textbook cross-origin request, which browsers block by default absent

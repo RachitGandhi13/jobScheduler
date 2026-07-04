@@ -1,7 +1,8 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
-import { jobLogs, jobs, queues } from "@scheduler/db";
+import { deadLetterQueue, jobLogs, jobs, queues, retryPolicies, scheduledJobs } from "@scheduler/db";
 import { db } from "../db.js";
 import { ApiError } from "../lib/apiError.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -26,8 +27,8 @@ const createJobBodySchema = z.object({
   queueId: z.string().uuid(),
   payload: z.record(z.unknown()).default({}),
   priority: z.number().int().default(0),
-  // No default here: when omitted, falls back to the owning queue's configured
-  // max_retries below, rather than silently overriding the queue's retry policy.
+  // No default here: when omitted, falls back to the owning queue's retry
+  // policy's max_retries below, rather than silently overriding it.
   maxAttempts: z.number().int().min(1).max(50).optional(),
   schedule: scheduleSchema.default({ mode: "immediate" }),
 });
@@ -40,7 +41,7 @@ const createJobBodySchema = z.object({
  *   queueId: string (uuid),     // must belong to :projectId
  *   payload?: Record<string, unknown>,
  *   priority?: number,          // default 0, higher claims first
- *   maxAttempts?: number,       // default: the owning queue's configured max_retries
+ *   maxAttempts?: number,       // default: the owning queue's retry_policies.max_retries
  *   schedule?:
  *     | { mode: "immediate" }
  *     | { mode: "delayed", runAt: string (ISO date) }
@@ -49,11 +50,11 @@ const createJobBodySchema = z.object({
  *
  * immediate  -> run_at = now(), status = 'queued' (claimable this instant).
  * delayed    -> run_at = schedule.runAt (must be future), status = 'scheduled'.
- * recurring  -> cronExpression persisted on the row as the baseline rule;
- *               run_at = its first computed occurrence, status = 'scheduled'.
- *               NOTE: only the first occurrence is scheduled here. Chaining
- *               subsequent occurrences after each run is worker-side work
- *               not yet wired up (see DEVELOPMENT.md).
+ * recurring  -> creates a scheduled_jobs row (the baseline rule: queue, type,
+ *               payload template, cron expression) and a jobs row for its
+ *               first occurrence, linked via scheduled_job_id. Only the first
+ *               occurrence is created here; worker-service chains every one
+ *               after that (see DEVELOPMENT.md).
  */
 jobsRouter.post(
   "/jobs",
@@ -74,40 +75,133 @@ jobsRouter.post(
       throw ApiError.notFound("queue_not_found", `Queue ${queueId} not found in this project`);
     }
 
-    let runAt: Date;
-    let status: "queued" | "scheduled";
-    let cronExpression: string | null = null;
+    const [retryPolicy] = await db.select().from(retryPolicies).where(eq(retryPolicies.queueId, queueId)).limit(1);
+    const resolvedMaxAttempts = maxAttempts ?? retryPolicy?.maxRetries ?? 3;
 
     if (schedule.mode === "immediate") {
-      runAt = new Date();
-      status = "queued";
-    } else if (schedule.mode === "delayed") {
+      const [job] = await db
+        .insert(jobs)
+        .values({ queueId, type, payload, priority, maxAttempts: resolvedMaxAttempts, runAt: new Date(), status: "queued" })
+        .returning();
+      return res.status(201).json({ data: job });
+    }
+
+    if (schedule.mode === "delayed") {
       if (schedule.runAt.getTime() <= Date.now()) {
         throw ApiError.badRequest("run_at_in_past", "schedule.runAt must be in the future");
       }
-      runAt = schedule.runAt;
-      status = "scheduled";
-    } else {
-      runAt = getNextCronRun(schedule.cronExpression);
-      status = "scheduled";
-      cronExpression = schedule.cronExpression;
+      const [job] = await db
+        .insert(jobs)
+        .values({
+          queueId,
+          type,
+          payload,
+          priority,
+          maxAttempts: resolvedMaxAttempts,
+          runAt: schedule.runAt,
+          status: "scheduled",
+        })
+        .returning();
+      return res.status(201).json({ data: job });
     }
 
-    const [job] = await db
-      .insert(jobs)
-      .values({
-        queueId,
-        type,
-        payload,
-        priority,
-        maxAttempts: maxAttempts ?? queue.maxRetries,
-        runAt,
-        status,
-        cronExpression,
-      })
-      .returning();
+    // recurring
+    const firstRunAt = getNextCronRun(schedule.cronExpression);
+
+    const [job] = await db.transaction(async (tx) => {
+      const [rule] = await tx
+        .insert(scheduledJobs)
+        .values({
+          queueId,
+          type,
+          payload,
+          priority,
+          maxAttempts: resolvedMaxAttempts,
+          cronExpression: schedule.cronExpression,
+        })
+        .returning();
+
+      return tx
+        .insert(jobs)
+        .values({
+          queueId,
+          type,
+          payload,
+          priority,
+          maxAttempts: resolvedMaxAttempts,
+          runAt: firstRunAt,
+          status: "scheduled",
+          scheduledJobId: rule.id,
+        })
+        .returning();
+    });
 
     res.status(201).json({ data: job });
+  }),
+);
+
+const createBatchBodySchema = z.object({
+  queueId: z.string().uuid(),
+  jobs: z
+    .array(
+      z.object({
+        type: z.string().min(1).max(255),
+        payload: z.record(z.unknown()).default({}),
+        priority: z.number().int().default(0),
+        maxAttempts: z.number().int().min(1).max(50).optional(),
+      }),
+    )
+    .min(1)
+    .max(500),
+});
+
+/**
+ * POST /api/projects/:projectId/jobs/batch
+ *
+ * Enqueues many immediate jobs on one queue, sharing a generated `batchId`
+ * (jobs.batch_id), in a single transaction -- either every job in the batch
+ * lands or none do.
+ */
+jobsRouter.post(
+  "/jobs/batch",
+  validate({ body: createBatchBodySchema }),
+  asyncHandler(async (req, res) => {
+    const projectId = req.context.projectId!;
+    const { queueId, jobs: jobSpecs } = req.body as z.infer<typeof createBatchBodySchema>;
+
+    const [queue] = await db
+      .select()
+      .from(queues)
+      .where(and(eq(queues.id, queueId), eq(queues.projectId, projectId)))
+      .limit(1);
+    if (!queue) {
+      throw ApiError.notFound("queue_not_found", `Queue ${queueId} not found in this project`);
+    }
+
+    const [retryPolicy] = await db.select().from(retryPolicies).where(eq(retryPolicies.queueId, queueId)).limit(1);
+    const defaultMaxAttempts = retryPolicy?.maxRetries ?? 3;
+    const batchId = crypto.randomUUID();
+    const runAt = new Date();
+
+    const inserted = await db.transaction((tx) =>
+      tx
+        .insert(jobs)
+        .values(
+          jobSpecs.map((spec) => ({
+            queueId,
+            type: spec.type,
+            payload: spec.payload,
+            priority: spec.priority,
+            maxAttempts: spec.maxAttempts ?? defaultMaxAttempts,
+            runAt,
+            status: "queued" as const,
+            batchId,
+          })),
+        )
+        .returning(),
+    );
+
+    res.status(201).json({ data: { batchId, count: inserted.length, jobs: inserted } });
   }),
 );
 
@@ -209,5 +303,65 @@ jobsRouter.get(
 
     const rows = await db.select().from(jobLogs).where(eq(jobLogs.jobId, jobId)).orderBy(asc(jobLogs.createdAt));
     res.json({ data: rows });
+  }),
+);
+
+const retryJobParamsSchema = z.object({
+  projectId: z.string().uuid(),
+  jobId: z.string().uuid(),
+});
+
+/**
+ * POST /api/projects/:projectId/jobs/:jobId/retry
+ *
+ * Manually force a 'failed' (dead-lettered) job back to 'queued', attempts
+ * reset to 0 and immediately claimable. Kept project-scoped -- not the bare
+ * `/api/jobs/:jobId/retry` path -- so it goes through the same tenant-
+ * ownership check every other job route requires; see DEVELOPMENT.md for why
+ * that consistency mattered more than matching the literal path.
+ */
+jobsRouter.post(
+  "/jobs/:jobId/retry",
+  validate({ params: retryJobParamsSchema }),
+  asyncHandler(async (req, res) => {
+    const { projectId, jobId } = req.params as unknown as z.infer<typeof retryJobParamsSchema>;
+
+    const [job] = await db
+      .select({ id: jobs.id, status: jobs.status })
+      .from(jobs)
+      .innerJoin(queues, eq(jobs.queueId, queues.id))
+      .where(and(eq(jobs.id, jobId), eq(queues.projectId, projectId)))
+      .limit(1);
+
+    if (!job) {
+      throw ApiError.notFound("job_not_found", `Job ${jobId} not found in this project`);
+    }
+    if (job.status !== "failed") {
+      throw ApiError.badRequest(
+        "job_not_retryable",
+        `Job is '${job.status}', not 'failed' -- only failed/dead-lettered jobs can be manually retried`,
+      );
+    }
+
+    await db.transaction(async (tx) => {
+      await tx
+        .update(jobs)
+        .set({ status: "queued", runAt: new Date(), attempts: 0, lastError: null, updatedAt: new Date() })
+        .where(eq(jobs.id, jobId));
+
+      // A retried job can dead-letter again later under a fresh set of
+      // attempts; clear the old entry so that future INSERT doesn't collide
+      // with dead_letter_queue's one-row-per-job unique constraint.
+      await tx.delete(deadLetterQueue).where(eq(deadLetterQueue.jobId, jobId));
+
+      await tx.insert(jobLogs).values({
+        jobId,
+        level: "info",
+        message: "Manually retried by operator -- attempts reset, requeued for immediate claiming",
+      });
+    });
+
+    const [updated] = await db.select().from(jobs).where(eq(jobs.id, jobId)).limit(1);
+    res.json({ data: updated });
   }),
 );

@@ -40,7 +40,7 @@ export async function runSweep(
     claimedCount += claimed.length;
 
     for (const job of claimed) {
-      const task = executeClaimedJob(db, job, queue, workerId).catch((err) => {
+      const task = executeClaimedJob(db, job, workerId).catch((err) => {
         onJobCrash?.(job.id, err);
       });
       inFlight.add(task);

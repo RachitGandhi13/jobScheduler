@@ -110,6 +110,8 @@ export const projects = pgTable("projects", {
 }));
 
 // --- Queues ------------------------------------------------------------------
+// Retry configuration lives in its own table (retryPolicies below), not as
+// columns here -- see that table's comment for why.
 
 export const queues = pgTable("queues", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -117,9 +119,6 @@ export const queues = pgTable("queues", {
   name: varchar("name", { length: 255 }).notNull(),
   priority: integer("priority").default(0).notNull(),
   concurrencyLimit: integer("concurrency_limit").default(1).notNull(),
-  retryStrategy: retryStrategyEnum("retry_strategy").default("fixed").notNull(),
-  maxRetries: integer("max_retries").default(3).notNull(),
-  retryBaseDelayMs: integer("retry_base_delay_ms").default(1000).notNull(),
   isPaused: boolean("is_paused").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -128,19 +127,78 @@ export const queues = pgTable("queues", {
   projectNameIdx: uniqueIndex("queues_project_id_name_idx").on(table.projectId, table.name),
 }));
 
+// --- Retry Policies ------------------------------------------------------------
+// 1:1 with a queue (a queue has exactly one active policy). Split out as its
+// own table rather than columns on `queues` so a policy has its own identity,
+// timestamps, and room to grow (e.g. per-job-type overrides) without
+// reshaping the queue row itself.
+
+export const retryPolicies = pgTable("retry_policies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  queueId: uuid("queue_id").notNull().references(() => queues.id, { onDelete: "cascade" }),
+  strategy: retryStrategyEnum("strategy").default("fixed").notNull(),
+  maxRetries: integer("max_retries").default(3).notNull(),
+  baseDelayMs: integer("base_delay_ms").default(1000).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  queueIdx: uniqueIndex("retry_policies_queue_id_idx").on(table.queueId),
+}));
+
+// --- Scheduled Jobs (recurring rule definitions) ------------------------------
+// The forward-looking cron *rule* (queue, handler type, payload template,
+// cron expression) lives here, isolated from `jobs` -- which stays the hot
+// operational table the worker's poll query hits every cycle. Each concrete
+// occurrence is still a row in `jobs`, linked back via jobs.scheduled_job_id.
+
+export const scheduledJobs = pgTable("scheduled_jobs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  queueId: uuid("queue_id").notNull().references(() => queues.id, { onDelete: "cascade" }),
+  type: varchar("type", { length: 255 }).notNull(),
+  payload: jsonb("payload").notNull().default({}),
+  priority: integer("priority").default(0).notNull(),
+  maxAttempts: integer("max_attempts").default(3).notNull(),
+  cronExpression: varchar("cron_expression", { length: 100 }).notNull(),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  queueIdx: index("scheduled_jobs_queue_id_idx").on(table.queueId),
+}));
+
 // --- Workers -----------------------------------------------------------------
+// Heartbeat history lives in worker_heartbeats below, not a column here --
+// this table is just worker identity/current status.
 
 export const workers = pgTable("workers", {
   id: uuid("id").primaryKey().defaultRandom(),
   hostname: varchar("hostname", { length: 255 }).notNull(),
   pid: integer("pid"),
   status: workerStatusEnum("status").default("idle").notNull(),
-  lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   statusIdx: index("workers_status_idx").on(table.status),
-  lastHeartbeatIdx: index("workers_last_heartbeat_at_idx").on(table.lastHeartbeatAt),
+}));
+
+// --- Worker Heartbeats ---------------------------------------------------------
+// Insert-only history: every heartbeat tick is its own row rather than
+// overwriting a single column, so "how healthy has this worker been" is a
+// real queryable log, not just the latest snapshot. The zombie-cleanup sweep
+// and GET /workers both need "the most recent heartbeat per worker," which is
+// what the composite (worker_id, heartbeat_at) index below is for.
+// Unbounded growth is a known trade-off at 1 row per worker per
+// HEARTBEAT_INTERVAL_MS -- a retention/cleanup job is the natural next step,
+// not built here (see DEVELOPMENT.md).
+
+export const workerHeartbeats = pgTable("worker_heartbeats", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  workerId: uuid("worker_id").notNull().references(() => workers.id, { onDelete: "cascade" }),
+  status: workerStatusEnum("status").notNull(),
+  heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  workerIdx: index("worker_heartbeats_worker_id_idx").on(table.workerId),
+  workerHeartbeatAtIdx: index("worker_heartbeats_worker_id_heartbeat_at_idx").on(table.workerId, table.heartbeatAt),
 }));
 
 // --- Jobs --------------------------------------------------------------------
@@ -153,7 +211,9 @@ export const jobs = pgTable("jobs", {
   status: jobStatusEnum("status").default("queued").notNull(),
   priority: integer("priority").default(0).notNull(),
   runAt: timestamp("run_at", { withTimezone: true }).defaultNow().notNull(),
-  cronExpression: varchar("cron_expression", { length: 100 }),
+  // Set only for an occurrence spawned by a recurring rule; the rule itself
+  // (including its cron expression) lives in scheduled_jobs, not here.
+  scheduledJobId: uuid("scheduled_job_id").references(() => scheduledJobs.id, { onDelete: "set null" }),
   batchId: uuid("batch_id"),
   maxAttempts: integer("max_attempts").default(3).notNull(),
   attempts: integer("attempts").default(0).notNull(),
@@ -170,6 +230,7 @@ export const jobs = pgTable("jobs", {
   runAtIdx: index("jobs_run_at_idx").on(table.runAt),
   queuePollIdx: index("jobs_queue_id_status_run_at_idx").on(table.queueId, table.status, table.runAt),
   batchIdx: index("jobs_batch_id_idx").on(table.batchId),
+  scheduledJobIdx: index("jobs_scheduled_job_id_idx").on(table.scheduledJobId),
 }));
 
 // --- Job Executions ------------------------------------------------------------
@@ -245,12 +306,24 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
 
 export const queuesRelations = relations(queues, ({ one, many }) => ({
   project: one(projects, { fields: [queues.projectId], references: [projects.id] }),
+  retryPolicy: one(retryPolicies, { fields: [queues.id], references: [retryPolicies.queueId] }),
   jobs: many(jobs),
+  scheduledJobs: many(scheduledJobs),
   deadLetterEntries: many(deadLetterQueue),
+}));
+
+export const retryPoliciesRelations = relations(retryPolicies, ({ one }) => ({
+  queue: one(queues, { fields: [retryPolicies.queueId], references: [queues.id] }),
+}));
+
+export const scheduledJobsRelations = relations(scheduledJobs, ({ one, many }) => ({
+  queue: one(queues, { fields: [scheduledJobs.queueId], references: [queues.id] }),
+  occurrences: many(jobs),
 }));
 
 export const jobsRelations = relations(jobs, ({ one, many }) => ({
   queue: one(queues, { fields: [jobs.queueId], references: [queues.id] }),
+  scheduledJob: one(scheduledJobs, { fields: [jobs.scheduledJobId], references: [scheduledJobs.id] }),
   claimedByWorker: one(workers, { fields: [jobs.claimedBy], references: [workers.id] }),
   executions: many(jobExecutions),
   logs: many(jobLogs),
@@ -260,6 +333,11 @@ export const jobsRelations = relations(jobs, ({ one, many }) => ({
 export const workersRelations = relations(workers, ({ many }) => ({
   claimedJobs: many(jobs),
   executions: many(jobExecutions),
+  heartbeats: many(workerHeartbeats),
+}));
+
+export const workerHeartbeatsRelations = relations(workerHeartbeats, ({ one }) => ({
+  worker: one(workers, { fields: [workerHeartbeats.workerId], references: [workers.id] }),
 }));
 
 export const jobExecutionsRelations = relations(jobExecutions, ({ one, many }) => ({

@@ -4,6 +4,7 @@ import { usePolling } from "../hooks/usePolling";
 import type { Job, JobStatus, Queue } from "../types";
 import { GlassCard } from "./GlassCard";
 import { JobDetailPanel } from "./JobDetailPanel";
+import { Toast } from "./Toast";
 
 const STATUSES: JobStatus[] = ["queued", "scheduled", "claimed", "running", "completed", "failed"];
 
@@ -25,6 +26,8 @@ export function JobExplorer({ queues }: JobExplorerProps) {
   const [status, setStatus] = useState<JobStatus | "">("");
   const [queueId, setQueueId] = useState("");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const pageSize = 10;
 
   const { data, loading, refetch } = usePolling(
@@ -34,6 +37,20 @@ export function JobExplorer({ queues }: JobExplorerProps) {
 
   const jobs = data?.data ?? [];
   const pagination = data?.pagination;
+
+  async function handleRetry(job: Job, e: React.MouseEvent) {
+    e.stopPropagation(); // don't also open the detail panel for this row
+    setRetryingId(job.id);
+    try {
+      await api.retryJob(job.id);
+      setToast(`"${job.type}" requeued for retry`);
+      refetch();
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setRetryingId(null);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -79,7 +96,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
       </GlassCard>
 
       <GlassCard className="overflow-x-auto p-0">
-        <table className="w-full min-w-[640px] text-left text-sm">
+        <table className="w-full min-w-[720px] text-left text-sm">
           <thead>
             <tr className="border-b border-olive/10 text-xs uppercase tracking-wide text-olive-dark/50">
               <th className="px-4 py-3">Type</th>
@@ -87,6 +104,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
               <th className="px-4 py-3">Attempts</th>
               <th className="px-4 py-3">Run at</th>
               <th className="px-4 py-3">Created</th>
+              <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody>
@@ -107,11 +125,22 @@ export function JobExplorer({ queues }: JobExplorerProps) {
                 </td>
                 <td className="px-4 py-3 text-olive-dark/70">{new Date(job.runAt).toLocaleString()}</td>
                 <td className="px-4 py-3 text-olive-dark/70">{new Date(job.createdAt).toLocaleString()}</td>
+                <td className="px-4 py-3 text-right">
+                  {job.status === "failed" && (
+                    <button
+                      onClick={(e) => handleRetry(job, e)}
+                      disabled={retryingId === job.id}
+                      className="rounded-full bg-terracotta-light px-3 py-1 text-xs font-medium text-olive-dark transition hover:bg-terracotta hover:text-white disabled:opacity-50"
+                    >
+                      {retryingId === job.id ? "Retrying…" : "Retry"}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
             {!loading && jobs.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-olive-dark/50">
+                <td colSpan={6} className="px-4 py-8 text-center text-olive-dark/50">
                   No jobs match these filters.
                 </td>
               </tr>
@@ -145,6 +174,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
       )}
 
       <JobDetailPanel job={selectedJob} onClose={() => setSelectedJob(null)} />
+      {toast && <Toast message={toast} onDismiss={() => setToast(null)} />}
     </div>
   );
 }

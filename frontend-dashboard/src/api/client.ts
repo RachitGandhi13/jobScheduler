@@ -73,6 +73,7 @@ export const api = {
     return request<{ data: Job[]; pagination: Pagination }>(projectPath(`/jobs${suffix}`));
   },
   getJobLogs: (jobId: string) => request<{ data: JobLog[] }>(projectPath(`/jobs/${jobId}/logs`)),
+  retryJob: (jobId: string) => request<{ data: Job }>(projectPath(`/jobs/${jobId}/retry`), { method: "POST" }),
 };
 
 export interface SignupBody {

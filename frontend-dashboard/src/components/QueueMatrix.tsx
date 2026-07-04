@@ -56,11 +56,15 @@ export function QueueMatrix({ queues, loading, onChanged }: QueueMatrixProps) {
             <dt className="text-olive-dark/60">Concurrency</dt>
             <dd className="text-right font-medium text-olive-dark">{queue.concurrencyLimit}</dd>
             <dt className="text-olive-dark/60">Retry strategy</dt>
-            <dd className="text-right font-medium capitalize text-olive-dark">{queue.retryStrategy}</dd>
+            <dd className="text-right font-medium capitalize text-olive-dark">
+              {queue.retryPolicy?.strategy ?? "—"}
+            </dd>
             <dt className="text-olive-dark/60">Max retries</dt>
-            <dd className="text-right font-medium text-olive-dark">{queue.maxRetries}</dd>
+            <dd className="text-right font-medium text-olive-dark">{queue.retryPolicy?.maxRetries ?? "—"}</dd>
             <dt className="text-olive-dark/60">Retry base delay</dt>
-            <dd className="text-right font-medium text-olive-dark">{queue.retryBaseDelayMs}ms</dd>
+            <dd className="text-right font-medium text-olive-dark">
+              {queue.retryPolicy ? `${queue.retryPolicy.baseDelayMs}ms` : "—"}
+            </dd>
           </dl>
 
           <button

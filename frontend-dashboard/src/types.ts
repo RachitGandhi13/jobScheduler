@@ -11,7 +11,7 @@ export interface Job {
   status: JobStatus;
   priority: number;
   runAt: string;
-  cronExpression: string | null;
+  scheduledJobId: string | null;
   batchId: string | null;
   maxAttempts: number;
   attempts: number;
@@ -30,12 +30,10 @@ export interface Queue {
   name: string;
   priority: number;
   concurrencyLimit: number;
-  retryStrategy: RetryStrategy;
-  maxRetries: number;
-  retryBaseDelayMs: number;
   isPaused: boolean;
   createdAt: string;
   updatedAt: string;
+  retryPolicy: { strategy: RetryStrategy; maxRetries: number; baseDelayMs: number } | null;
 }
 
 export interface Worker {

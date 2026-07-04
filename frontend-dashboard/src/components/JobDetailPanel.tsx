@@ -63,10 +63,12 @@ export function JobDetailPanel({ job, onClose }: JobDetailPanelProps) {
               </dd>
               <dt className="text-olive-dark/60">Run at</dt>
               <dd className="text-right font-medium text-olive-dark">{new Date(job.runAt).toLocaleString()}</dd>
-              {job.cronExpression && (
+              {job.scheduledJobId && (
                 <>
-                  <dt className="text-olive-dark/60">Cron</dt>
-                  <dd className="text-right font-mono text-xs font-medium text-olive-dark">{job.cronExpression}</dd>
+                  <dt className="text-olive-dark/60">Recurring</dt>
+                  <dd className="text-right font-mono text-xs font-medium text-olive-dark">
+                    rule {job.scheduledJobId.slice(0, 8)}
+                  </dd>
                 </>
               )}
               {job.lastError && (

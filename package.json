@@ -15,7 +15,8 @@
     "db:generate": "npm run generate -w packages/db",
     "db:migrate": "npm run migrate -w packages/db",
     "build:api": "npm run build -w packages/db && npm run build -w backend-api",
-    "build:worker": "npm run build -w packages/db && npm run build -w worker-service"
+    "build:worker": "npm run build -w packages/db && npm run build -w worker-service",
+    "test": "npm run build -w packages/db && npm run test -w backend-api && npm run test -w worker-service"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

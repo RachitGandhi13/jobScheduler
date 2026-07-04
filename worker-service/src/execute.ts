@@ -5,14 +5,14 @@ import {
   jobExecutions,
   jobLogs,
   jobs,
-  queues,
+  retryPolicies,
+  scheduledJobs,
   type Database,
 } from "@scheduler/db";
 import { getNextCronRun } from "./cron.js";
 import { computeNextRunAt } from "./retry.js";
 
 type Job = InferSelectModel<typeof jobs>;
-type Queue = InferSelectModel<typeof queues>;
 // Accepts either the top-level Database or a transaction handle, so `log` can
 // be called from inside db.transaction(...) without a separate helper.
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -57,12 +57,7 @@ async function runSimulatedTask(job: Job): Promise<void> {
  * so a bug here can't leave a job stuck in 'claimed'/'running' forever (the
  * zombie cleanup monitor is the backstop for a worker process dying mid-execution).
  */
-export async function executeClaimedJob(
-  db: Database,
-  job: Job,
-  queue: Queue,
-  workerId: string,
-): Promise<void> {
+export async function executeClaimedJob(db: Database, job: Job, workerId: string): Promise<void> {
   const attemptNumber = job.attempts + 1;
   const startedAt = new Date();
 
@@ -98,35 +93,42 @@ export async function executeClaimedJob(
 
       await log(tx, job.id, execution.id, "info", "Completed successfully");
 
-      if (job.cronExpression) {
-        // Chained from job.runAt (the occurrence that just ran), not now(), so
-        // the cadence stays locked to the original schedule instead of
-        // drifting with however long execution happened to take. Status
-        // 'scheduled' matches how delayed/recurring jobs are created via the
-        // API -- claimable the instant run_at is due, no promotion step.
-        const nextRunAt = getNextCronRun(job.cronExpression, job.runAt);
+      if (job.scheduledJobId) {
+        // The recurring *rule* lives in scheduled_jobs, isolated from this hot
+        // table -- fetch it fresh rather than trusting the parent job's own
+        // columns, since the rule is the authoritative template.
+        const [rule] = await tx.select().from(scheduledJobs).where(eq(scheduledJobs.id, job.scheduledJobId)).limit(1);
 
-        const [child] = await tx
-          .insert(jobs)
-          .values({
-            queueId: job.queueId,
-            type: job.type,
-            payload: job.payload,
-            priority: job.priority,
-            maxAttempts: job.maxAttempts,
-            runAt: nextRunAt,
-            status: "scheduled",
-            cronExpression: job.cronExpression,
-          })
-          .returning({ id: jobs.id });
+        if (rule?.isActive) {
+          // Chained from job.runAt (the occurrence that just ran), not now(),
+          // so the cadence stays locked to the original schedule instead of
+          // drifting with however long execution happened to take. Status
+          // 'scheduled' matches how delayed/recurring jobs are created via
+          // the API -- claimable the instant run_at is due, no promotion step.
+          const nextRunAt = getNextCronRun(rule.cronExpression, job.runAt);
 
-        await log(
-          tx,
-          job.id,
-          execution.id,
-          "info",
-          `Recurring: next occurrence ${child.id} scheduled for ${nextRunAt.toISOString()}`,
-        );
+          const [child] = await tx
+            .insert(jobs)
+            .values({
+              queueId: rule.queueId,
+              type: rule.type,
+              payload: rule.payload,
+              priority: rule.priority,
+              maxAttempts: rule.maxAttempts,
+              runAt: nextRunAt,
+              status: "scheduled",
+              scheduledJobId: rule.id,
+            })
+            .returning({ id: jobs.id });
+
+          await log(
+            tx,
+            job.id,
+            execution.id,
+            "info",
+            `Recurring: next occurrence ${child.id} scheduled for ${nextRunAt.toISOString()}`,
+          );
+        }
       }
     });
   } catch (err) {
@@ -162,7 +164,10 @@ export async function executeClaimedJob(
 
         await log(tx, job.id, execution.id, "error", "Max attempts exceeded — moved to dead letter queue");
       } else {
-        const nextRunAt = computeNextRunAt(queue.retryStrategy, queue.retryBaseDelayMs, attemptNumber);
+        const [retryPolicy] = await tx.select().from(retryPolicies).where(eq(retryPolicies.queueId, job.queueId)).limit(1);
+        const strategy = retryPolicy?.strategy ?? "fixed";
+        const baseDelayMs = retryPolicy?.baseDelayMs ?? 1000;
+        const nextRunAt = computeNextRunAt(strategy, baseDelayMs, attemptNumber);
 
         await tx
           .update(jobs)
@@ -182,7 +187,7 @@ export async function executeClaimedJob(
           job.id,
           execution.id,
           "warn",
-          `Retry ${attemptNumber + 1} scheduled at ${nextRunAt.toISOString()} (${queue.retryStrategy} backoff)`,
+          `Retry ${attemptNumber + 1} scheduled at ${nextRunAt.toISOString()} (${strategy} backoff)`,
         );
       }
     });

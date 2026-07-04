@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import { asc, eq } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
-import { organizationMembers, organizations, projects, queues, users } from "@scheduler/db";
+import { organizationMembers, organizations, projects, queues, retryPolicies, users } from "@scheduler/db";
 import { db } from "../db.js";
 import { ApiError } from "../lib/apiError.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -84,13 +84,20 @@ authRouter.post(
           name: "default",
           priority: 0,
           concurrencyLimit: 2,
-          retryStrategy: "exponential",
-          maxRetries: 3,
-          retryBaseDelayMs: 1000,
         })
         .returning();
 
-      return { user, organization, project, queue };
+      const [retryPolicy] = await tx
+        .insert(retryPolicies)
+        .values({
+          queueId: queue.id,
+          strategy: "exponential",
+          maxRetries: 3,
+          baseDelayMs: 1000,
+        })
+        .returning();
+
+      return { user, organization, project, queue, retryPolicy };
     });
 
     const token = issueToken(result.user.id, result.organization.id);

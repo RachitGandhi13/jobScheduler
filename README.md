@@ -107,21 +107,132 @@ trace on how this, queue pausing, and cron chaining all interact at the database
 
 ## Data model
 
-`Organization` → `Project` → `Queue` → `Job` is the tenancy/ownership chain; the rest hang off
-`Job` and `Worker`. Full column-level detail (types, indexes, cascade behavior) is in
-`packages/db/src/schema.ts`, which is the source of truth this list mirrors:
+`Organization` → `Project` → `Queue` → `Job` is the tenancy/ownership chain. Every entity named in
+the assignment brief is its own table — retry configuration, worker heartbeats, and recurring-job
+rules were originally columns on other tables and were split out into `retry_policies`,
+`worker_heartbeats`, and `scheduled_jobs` respectively (see `DEVELOPMENT.md` for why, and what that
+migration had to preserve). Full column-level detail (types, defaults, indexes) is in
+`packages/db/src/schema.ts`, the source of truth this diagram mirrors.
 
-```
-Organization   1---* Project              (projects.organization_id)
-Organization   1---* OrganizationMember  *---1  User   (RBAC join table)
-Project        1---* Queue                (queues.project_id)
-Queue          1---* Job                  (jobs.queue_id)
-Job            1---* JobExecution         (job_executions.job_id)
-Job            1---* JobLog               (job_logs.job_id)
-JobExecution   1---* JobLog               (job_logs.execution_id, nullable)
-Job            1---1 DeadLetterQueue      (dead_letter_queue.job_id, unique: a job dead-letters once)
-Worker         1---* Job                  (jobs.claimed_by, nullable)
-Worker         1---* JobExecution         (job_executions.worker_id, nullable)
+```mermaid
+erDiagram
+    ORGANIZATIONS ||--o{ ORGANIZATION_MEMBERS : "has members"
+    USERS ||--o{ ORGANIZATION_MEMBERS : "belongs to"
+    ORGANIZATIONS ||--o{ PROJECTS : owns
+    USERS ||--o{ PROJECTS : "created by"
+    PROJECTS ||--o{ QUEUES : contains
+    QUEUES ||--|| RETRY_POLICIES : configures
+    QUEUES ||--o{ SCHEDULED_JOBS : defines
+    QUEUES ||--o{ JOBS : holds
+    SCHEDULED_JOBS ||--o{ JOBS : spawns
+    WORKERS ||--o{ JOBS : claims
+    WORKERS ||--o{ WORKER_HEARTBEATS : ticks
+    WORKERS ||--o{ JOB_EXECUTIONS : runs
+    JOBS ||--o{ JOB_EXECUTIONS : has
+    JOBS ||--o{ JOB_LOGS : has
+    JOB_EXECUTIONS ||--o{ JOB_LOGS : has
+    JOBS ||--|| DEAD_LETTER_QUEUE : "dead-letters to"
+    QUEUES ||--o{ DEAD_LETTER_QUEUE : isolates
+
+    ORGANIZATIONS {
+        uuid id PK
+        varchar name
+        varchar slug UK
+    }
+    USERS {
+        uuid id PK
+        varchar email UK
+        varchar password_hash
+        varchar name
+    }
+    ORGANIZATION_MEMBERS {
+        uuid id PK
+        uuid organization_id FK
+        uuid user_id FK
+        enum role "owner | admin | member"
+    }
+    PROJECTS {
+        uuid id PK
+        uuid organization_id FK
+        uuid owner_id FK
+        varchar name
+        varchar api_key UK
+    }
+    QUEUES {
+        uuid id PK
+        uuid project_id FK
+        varchar name
+        int priority
+        int concurrency_limit
+        bool is_paused
+    }
+    RETRY_POLICIES {
+        uuid id PK
+        uuid queue_id FK "unique -- 1:1 with queue"
+        enum strategy "fixed | linear | exponential"
+        int max_retries
+        int base_delay_ms
+    }
+    SCHEDULED_JOBS {
+        uuid id PK
+        uuid queue_id FK
+        varchar type
+        jsonb payload
+        varchar cron_expression
+        bool is_active
+    }
+    JOBS {
+        uuid id PK
+        uuid queue_id FK
+        uuid scheduled_job_id FK "nullable"
+        uuid claimed_by FK "nullable -> workers"
+        uuid batch_id "nullable, no FK table"
+        varchar type
+        jsonb payload
+        enum status "queued|scheduled|claimed|running|completed|failed"
+        int priority
+        timestamptz run_at
+        int max_attempts
+        int attempts
+    }
+    WORKERS {
+        uuid id PK
+        varchar hostname
+        int pid
+        enum status "idle | busy | offline"
+        timestamptz started_at
+    }
+    WORKER_HEARTBEATS {
+        uuid id PK
+        uuid worker_id FK
+        enum status
+        timestamptz heartbeat_at
+    }
+    JOB_EXECUTIONS {
+        uuid id PK
+        uuid job_id FK
+        uuid worker_id FK "nullable"
+        int attempt_number
+        enum status "running | success | failure"
+        timestamptz started_at
+        timestamptz finished_at
+        int duration_ms
+    }
+    JOB_LOGS {
+        uuid id PK
+        uuid job_id FK
+        uuid execution_id FK "nullable"
+        enum level "debug | info | warn | error"
+        text message
+    }
+    DEAD_LETTER_QUEUE {
+        uuid id PK
+        uuid job_id FK "unique -- 1:1 with job"
+        uuid queue_id FK
+        jsonb payload
+        int attempts
+        text fail_reason
+    }
 ```
 
 ## Setup
@@ -239,6 +350,30 @@ Query params: `page` (default 1), `pageSize` (default 20, max 100), `queueId?`, 
 }
 ```
 
+### `POST /api/projects/:projectId/jobs/batch`
+
+Enqueues many immediate jobs on one queue in a single transaction, sharing a generated `batchId`.
+
+```jsonc
+// request body
+{
+  "queueId": "3fa2...uuid",
+  "jobs": [
+    { "type": "send-email", "payload": { "to": "a@example.com" } },
+    { "type": "send-email", "payload": { "to": "b@example.com" } }
+  ] // 1-500 entries; each accepts payload?/priority?/maxAttempts? same as POST /jobs
+}
+```
+
+Response: `201 { "data": { "batchId": "...", "count": 2, "jobs": [ /* job rows */ ] } }`.
+
+### `POST /api/projects/:projectId/jobs/:jobId/retry`
+
+Manually forces a `failed` (dead-lettered) job back to `queued`: attempts reset to `0`, immediately
+claimable, and any existing `dead_letter_queue` row for it is cleared (it can dead-letter again
+under a fresh set of attempts). `400 job_not_retryable` if the job isn't currently `failed`.
+Response: `200 { "data": <job row> }`.
+
 ### `POST /api/projects/:projectId/queues/:queueId/pause`
 
 Sets `queues.is_paused = true`. Jobs already `claimed`/`running` are unaffected — this only stops
@@ -252,7 +387,13 @@ Clears `is_paused`. Same response shape as pause.
 ### `GET /api/projects/:projectId/queues`
 
 Lists the project's queues (config + `isPaused`), ordered by priority descending. Backs the
-dashboard's Queue Configuration Matrix. Response: `200 { "data": <queue row>[] }`.
+dashboard's Queue Configuration Matrix. Each row's retry configuration is a nested `retryPolicy`
+object (`{ strategy, maxRetries, baseDelayMs }`) — it lives in its own `retry_policies` table (see
+"Data model"), flattened onto the queue in the API response so clients don't need to know that.
+
+```json
+{ "data": [{ "id": "...", "name": "emails", "isPaused": false, "retryPolicy": { "strategy": "exponential", "maxRetries": 3, "baseDelayMs": 500 } }] }
+```
 
 ### `GET /api/projects/:projectId/jobs/:jobId/logs`
 
@@ -312,6 +453,34 @@ no server-side rendering, no separate backend-for-frontend.
   the dataviz skill's palette checker.
 - Env: `VITE_API_BASE_URL` (see `.env.example`). Scripts: `npm run dev:frontend` (root) or
   `dev`/`build`/`preview`/`typecheck` inside `frontend-dashboard/`.
+
+## Testing
+
+Real integration tests against a real Postgres — no mocked database, since the whole point is
+verifying atomic claiming, retry/backoff math, and crash recovery actually work at the database
+level, not that a mock was configured correctly.
+
+1. `createdb scheduler_test` (or point `TEST_DATABASE_URL` at any throwaway Postgres database).
+2. `npm test` from the repo root — builds `packages/db`, then runs `backend-api`'s and
+   `worker-service`'s suites. Each suite's `beforeAll` applies migrations to the test DB
+   automatically (idempotent, safe to leave running across multiple `npm test` invocations).
+
+What's covered, each directly exercising a mechanic this project depends on for correctness:
+
+- **`worker-service/src/__tests__/claim.test.ts`** — 5 concurrent `claimJobs()` calls race the same
+  single queued row; asserts exactly one wins (`FOR UPDATE SKIP LOCKED` under a real race, not a
+  simulated one).
+- **`worker-service/src/__tests__/execute.test.ts`** — a job configured to always fail: asserts the
+  fixed-backoff `run_at` math is correct to within a small tolerance, then that exhausting
+  `max_retries` produces a `failed` status and a matching `dead_letter_queue` row. A second case
+  asserts a successful run never touches either.
+- **`backend-api/src/__tests__/zombieCleanup.test.ts`** — a `running` job under a worker whose most
+  recent heartbeat is aged past the timeout: asserts the sweep reverts it to `queued` with attempts
+  *preserved* and marks the worker `offline`. A second case asserts a worker with a fresh heartbeat
+  is left untouched.
+
+Each test creates its own organization/project/queue/worker fixtures (unique names per run) and
+deletes them in `afterEach` — safe to run repeatedly with no manual cleanup.
 
 ## Deployment
 
