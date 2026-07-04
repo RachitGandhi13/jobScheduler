@@ -53,7 +53,7 @@ function NoProjectCard({ onCreated }: { onCreated: (project: { id: string; name:
         <button
           onClick={handleCreate}
           disabled={creating || !name.trim()}
-          className="shrink-0 rounded-lg bg-olive px-4 py-2 text-sm font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+          className="btn-press shrink-0 rounded-lg bg-olive px-4 py-2 text-sm font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
         >
           {creating ? "Creating…" : "Create project"}
         </button>
@@ -111,7 +111,7 @@ function App() {
       {!hasProject ? (
         <NoProjectCard onCreated={switchProject} />
       ) : tab === "overview" ? (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <div className="stagger grid grid-cols-1 gap-6 xl:grid-cols-2">
           <ClusterHealth workers={workers} metrics={metrics} live={liveConnected} />
           <ThroughputChart metrics={metrics} />
         </div>

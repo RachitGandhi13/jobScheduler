@@ -1,17 +1,117 @@
 @import "tailwindcss";
 
-/* Design tokens: soft sand-cream canvas, earthy olive/sage highlights, terracotta accents. */
+/*
+ * Design tokens: warm ivory canvas, a rich rust-brown as the primary brand
+ * color (buttons, active states, links), a muted gold as the secondary
+ * accent (badges, highlights), deep espresso as the ink/text color, and a
+ * genuinely distinct red-orange reserved for alerts/danger so it never gets
+ * confused with the rust brand color at a glance. Every existing component
+ * already reads colors through these five names -- retheming here cascades
+ * everywhere with no component-level changes needed.
+ */
 @theme {
-  --color-sand: #f4f4f3;
-  --color-olive: #6e7a6e;
-  --color-olive-dark: #586358;
-  --color-sage: #c0cfc0;
-  --color-terracotta: #dda28f;
-  --color-terracotta-light: #e5cec6;
+  --color-sand: #f6f1e7;
+  --color-olive: #8a3a1f;
+  --color-olive-dark: #26170f;
+  --color-sage: #c9a568;
+  --color-terracotta: #c1502e;
+  --color-terracotta-light: #ecd2bf;
+
+  --font-sans:
+    "Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif;
+
+  /* Every existing `transition`/`transition-colors` class in the app already
+     picks these up -- a slightly longer duration and an ease-out curve
+     (instead of Tailwind's default linear-ish ease) makes hover/focus states
+     across the whole dashboard read as noticeably smoother with zero
+     component-level changes. */
+  --default-transition-duration: 200ms;
+  --default-transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @layer base {
   body {
-    @apply bg-sand text-olive-dark antialiased;
+    @apply bg-sand font-sans text-olive-dark antialiased;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-sage) 45%, transparent);
+  }
+}
+
+@layer components {
+  /* Tactile press feedback for primary CTAs (submit/create/retry buttons) --
+     a quick scale-down on :active reads as a real button press rather than
+     just a color swap. Left off secondary/toggle buttons on purpose so it
+     stays a signal for "this is the primary action," not decoration. */
+  .btn-press {
+    @apply transition-transform duration-150 active:scale-[0.97];
+  }
+}
+
+/* ---------- Motion ---------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes fade-in-up {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out both;
+  }
+
+  .animate-scale-in {
+    animation: scale-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* Staggers a list of .animate-fade-in-up children by DOM order, up to 8
+     deep -- used for card grids (QueueMatrix) and table rows (JobExplorer)
+     so a fresh render reveals as a gentle cascade instead of all at once. */
+  .stagger > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger > *:nth-child(2) { animation-delay: 40ms; }
+  .stagger > *:nth-child(3) { animation-delay: 80ms; }
+  .stagger > *:nth-child(4) { animation-delay: 120ms; }
+  .stagger > *:nth-child(5) { animation-delay: 160ms; }
+  .stagger > *:nth-child(6) { animation-delay: 200ms; }
+  .stagger > *:nth-child(7) { animation-delay: 240ms; }
+  .stagger > *:nth-child(8) { animation-delay: 280ms; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-up,
+  .animate-fade-in,
+  .animate-scale-in {
+    animation: none;
   }
 }

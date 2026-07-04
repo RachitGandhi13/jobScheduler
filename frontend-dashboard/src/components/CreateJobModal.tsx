@@ -76,8 +76,8 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-olive-dark/20 p-4 backdrop-blur-sm">
-      <GlassCard className="max-h-[90vh] w-full max-w-lg overflow-y-auto p-6">
+    <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-olive-dark/20 p-4 backdrop-blur-sm">
+      <GlassCard className="animate-scale-in max-h-[90vh] w-full max-w-lg overflow-y-auto p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-olive-dark">Create job</h2>
           <button onClick={onClose} className="text-olive-dark/60 hover:text-olive-dark" aria-label="Close">
@@ -219,7 +219,7 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
           <button
             onClick={handleSubmit}
             disabled={submitting || queues.length === 0}
-            className="w-full rounded-lg bg-olive px-4 py-2 font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+            className="btn-press w-full rounded-lg bg-olive px-4 py-2 font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
           >
             {submitting ? "Creating…" : "Create job"}
           </button>

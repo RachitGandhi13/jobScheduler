@@ -218,7 +218,7 @@ function QueueCard({
           <button
             onClick={saveEdit}
             disabled={pending}
-            className="flex-1 rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white hover:bg-olive-dark disabled:opacity-50"
+            className="btn-press flex-1 rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white hover:bg-olive-dark disabled:opacity-50"
           >
             {pending ? "Saving…" : "Save"}
           </button>
@@ -406,7 +406,7 @@ export function QueueMatrix({ queues, loading, role, onChanged }: QueueMatrixPro
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="stagger grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {(queues ?? []).map((queue) => (
         <QueueCard key={queue.id} queue={queue} canManage={canManage} onChanged={onChanged} />
       ))}

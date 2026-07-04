@@ -91,7 +91,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
 
         <button
           onClick={() => setCreating(true)}
-          className="ml-auto rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white transition hover:bg-olive-dark"
+          className="btn-press ml-auto rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white transition hover:bg-olive-dark"
         >
           + Create job
         </button>
@@ -144,7 +144,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
                     <button
                       onClick={(e) => handleRetry(job, e)}
                       disabled={retryingId === job.id}
-                      className="rounded-full bg-terracotta-light px-3 py-1 text-xs font-medium text-olive-dark transition hover:bg-terracotta hover:text-white disabled:opacity-50"
+                      className="btn-press rounded-full bg-terracotta-light px-3 py-1 text-xs font-medium text-olive-dark transition hover:bg-terracotta hover:text-white disabled:opacity-50"
                     >
                       {retryingId === job.id ? "Retrying…" : "Retry"}
                     </button>

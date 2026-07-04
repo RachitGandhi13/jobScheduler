@@ -84,8 +84,8 @@ export function AccountPanel({ session, onLogout, onClose, onSwitchProject }: Ac
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-olive-dark/20 p-4 backdrop-blur-sm">
-      <GlassCard className="w-full max-w-md p-6">
+    <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-olive-dark/20 p-4 backdrop-blur-sm">
+      <GlassCard className="animate-scale-in w-full max-w-md p-6">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-olive-dark">Account</h2>
           <button onClick={onClose} className="text-olive-dark/60 hover:text-olive-dark" aria-label="Close">
@@ -196,7 +196,7 @@ export function AccountPanel({ session, onLogout, onClose, onSwitchProject }: Ac
               <button
                 onClick={handleCreate}
                 disabled={creating || !newName.trim()}
-                className="shrink-0 rounded-lg bg-olive px-3 py-1.5 text-xs font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+                className="btn-press shrink-0 rounded-lg bg-olive px-3 py-1.5 text-xs font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
               >
                 {creating ? "Creating…" : "Create"}
               </button>

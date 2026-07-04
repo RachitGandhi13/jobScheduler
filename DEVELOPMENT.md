@@ -415,6 +415,28 @@ this failure mode) — the price of putting the queue in the same database as ev
   token is a JWT signed by Google's private key, which cannot be fabricated in a test environment;
   this is inherent to the design, not a gap in verification effort.
 
+- **Re-theme (warm rust/cream/gold palette, Helvetica, motion) touched exactly one file for
+  color/type and stayed component-structure-neutral everywhere else.** Every component already
+  read colors through five named Tailwind v4 `@theme` tokens (`sand`, `olive`, `olive-dark`,
+  `sage`, `terracotta`/`terracotta-light`) rather than raw hex classes — changing what those five
+  names resolve to in `index.css` restyled the entire dashboard with zero `className` edits needed
+  anywhere for color. Kept every token's *semantic* role identical to avoid exactly that kind of
+  churn: `olive` stayed "primary action," `olive-dark` stayed "ink/text," `sage` stayed "secondary
+  highlight," `terracotta` stayed "alert/danger" — only their hex values moved from muted
+  sage-green to rust-brown/gold/espresso. Danger (`terracotta`, a red-orange) was deliberately kept
+  visually distinct from the new primary brand color (`olive`, a darker rust-brown) despite both
+  being warm reds, specifically so a dead-letter count or error state never reads as "just another
+  button." Motion follows the same low-invasiveness principle: `--default-transition-duration`/
+  `--default-transition-timing-function` overrides in `@theme` smooth every *existing*
+  `transition`/`transition-colors` class across the app without touching them, a `.animate-fade-in-up`
+  on the shared `GlassCard` gives every card in the app a one-time mount animation (React doesn't
+  remount on prop changes, so this can't replay on a polling refresh), and a `.stagger` utility
+  cascades sibling cards' entrance by a fixed per-child delay. Respects
+  `prefers-reduced-motion: reduce` by disabling all three keyframe animations outright, not just
+  shortening them. Font is a plain `Helvetica Neue, Helvetica, Arial, ...` stack per instruction,
+  not the serif the moodboard actually used — an intentional override of the reference image where
+  it conflicted with an explicit instruction.
+
 ## Design trace: queue pausing × cron evaluation at the DB level
 
 These two features never touch each other directly, but they interact through the one query both

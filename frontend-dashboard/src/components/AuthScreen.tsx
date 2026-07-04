@@ -111,7 +111,7 @@ export function AuthScreen({ onLogin, onSignup, onGoogleLogin }: AuthScreenProps
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-lg bg-olive px-4 py-2 text-sm font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+            className="btn-press w-full rounded-lg bg-olive px-4 py-2 text-sm font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
           >
             {busy ? "Working…" : mode === "login" ? "Log in" : "Create workspace"}
           </button>
