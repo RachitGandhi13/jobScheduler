@@ -68,13 +68,18 @@ function App() {
 
   const hasProject = session?.project != null;
 
-  const { data: queuesData, refetch: refetchQueues } = usePolling(() => api.listQueues(), 5000, hasProject);
-  const { data: workersData } = usePolling(() => api.listWorkers(), 5000, hasProject);
-  const { data: metricsData } = usePolling(() => api.getMetrics(), 5000, hasProject);
+  const {
+    data: queuesData,
+    error: queuesError,
+    refetch: refetchQueues,
+  } = usePolling(() => api.listQueues(), 5000, hasProject);
+  const { data: workersData, error: workersError } = usePolling(() => api.listWorkers(), 5000, hasProject);
+  const { data: metricsData, error: metricsError } = usePolling(() => api.getMetrics(), 5000, hasProject);
 
   const queues = queuesData?.data ?? null;
   const workers = workersData?.data ?? null;
   const metrics = metricsData?.data ?? null;
+  const pollingError = queuesError ?? workersError ?? metricsError;
 
   if (checking) {
     return <div className="flex min-h-screen items-center justify-center bg-sand text-olive-dark/60">Loading…</div>;
@@ -93,6 +98,11 @@ function App() {
       onLogout={logout}
       onSwitchProject={switchProject}
     >
+      {hasProject && pollingError && (
+        <p className="mb-4 rounded-lg bg-terracotta-light/60 px-4 py-2 text-sm text-olive-dark">
+          Couldn't refresh: {pollingError.message}. Showing the last data loaded successfully.
+        </p>
+      )}
       {!hasProject ? (
         <NoProjectCard onCreated={switchProject} />
       ) : tab === "overview" ? (

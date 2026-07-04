@@ -32,7 +32,7 @@ export function JobExplorer({ queues }: JobExplorerProps) {
   const [creating, setCreating] = useState(false);
   const pageSize = 10;
 
-  const { data, loading, refetch } = usePolling(
+  const { data, loading, error, refetch } = usePolling(
     () => api.listJobs({ page, pageSize, status: status || undefined, queueId: queueId || undefined }),
     4000,
   );
@@ -102,6 +102,12 @@ export function JobExplorer({ queues }: JobExplorerProps) {
           Refresh
         </button>
       </GlassCard>
+
+      {error && (
+        <p className="rounded-lg bg-terracotta-light/60 px-4 py-2 text-sm text-olive-dark">
+          Couldn't refresh: {error.message}. Showing the last data loaded successfully.
+        </p>
+      )}
 
       <GlassCard className="overflow-x-auto p-0">
         <table className="w-full min-w-[720px] text-left text-sm">
