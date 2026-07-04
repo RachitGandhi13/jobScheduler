@@ -4,6 +4,7 @@ import { requireProjectAccess } from "../middleware/projectAccess.js";
 import { authRouter } from "./auth.js";
 import { jobsRouter } from "./jobs.js";
 import { metricsRouter } from "./metrics.js";
+import { organizationsRouter } from "./organizations.js";
 import { projectDetailRouter, projectsRouter } from "./projects.js";
 import { queuesRouter } from "./queues.js";
 import { workersRouter } from "./workers.js";
@@ -30,4 +31,5 @@ apiRouter.use(workersRouter);
 // GET/POST /api/projects resolve here rather than being swallowed as an
 // (invalid) :projectId value.
 apiRouter.use(projectsRouter);
+apiRouter.use(organizationsRouter);
 apiRouter.use("/projects/:projectId", projectRouter);

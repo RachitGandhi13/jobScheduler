@@ -26,6 +26,10 @@ const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS ?? 5000);
 // Wall-clock budget for this invocation, so a busy sweep never runs past the
 // next scheduled tick. Default assumes a schedule firing every 1-5 minutes.
 const MAX_RUN_MS = Number(process.env.MAX_RUN_MS ?? 45_000);
+// Sharding applies here too (unlike the LISTEN/NOTIFY optimization, which is
+// continuous-loop only) -- a GitHub Actions matrix could run several
+// one-shot invocations in parallel, each pinned to a different shard.
+const WORKER_SHARD_INDEX = Number(process.env.WORKER_SHARD_INDEX ?? 0);
 
 const db = createDb(DATABASE_URL);
 
@@ -40,6 +44,7 @@ async function main() {
   for (;;) {
     const { claimedCount, inFlight } = await runSweep(db, workerId, {
       maxClaimPerQueue: MAX_CLAIM_PER_QUEUE,
+      workerShardIndex: WORKER_SHARD_INDEX,
       onJobCrash: (jobId, err) => console.error(`[worker:once] job ${jobId} execution crashed unexpectedly`, err),
     });
     await Promise.allSettled([...inFlight]);

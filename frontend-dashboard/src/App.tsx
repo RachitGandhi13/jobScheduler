@@ -9,6 +9,7 @@ import { QueueMatrix } from "./components/QueueMatrix";
 import type { TabKey } from "./components/Sidebar";
 import { ThroughputChart } from "./components/ThroughputChart";
 import { useAuth } from "./hooks/useAuth";
+import { useLiveOverview } from "./hooks/useLiveOverview";
 import { usePolling } from "./hooks/usePolling";
 
 const TITLES: Record<TabKey, string> = {
@@ -75,10 +76,14 @@ function App() {
   } = usePolling(() => api.listQueues(), 5000, hasProject);
   const { data: workersData, error: workersError } = usePolling(() => api.listWorkers(), 5000, hasProject);
   const { data: metricsData, error: metricsError } = usePolling(() => api.getMetrics(), 5000, hasProject);
+  // Live push channel for the Overview tab; falls back to the polled data
+  // above whenever it isn't connected (fresh page load, a dropped socket
+  // mid-reconnect, or an environment that hasn't wired up WS at all).
+  const { snapshot: liveSnapshot, connected: liveConnected } = useLiveOverview(hasProject);
 
   const queues = queuesData?.data ?? null;
-  const workers = workersData?.data ?? null;
-  const metrics = metricsData?.data ?? null;
+  const workers = liveConnected && liveSnapshot ? liveSnapshot.workers : (workersData?.data ?? null);
+  const metrics = liveConnected && liveSnapshot ? liveSnapshot.metrics : (metricsData?.data ?? null);
   const pollingError = queuesError ?? workersError ?? metricsError;
 
   if (checking) {
@@ -107,7 +112,7 @@ function App() {
         <NoProjectCard onCreated={switchProject} />
       ) : tab === "overview" ? (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <ClusterHealth workers={workers} metrics={metrics} />
+          <ClusterHealth workers={workers} metrics={metrics} live={liveConnected} />
           <ThroughputChart metrics={metrics} />
         </div>
       ) : tab === "queues" ? (

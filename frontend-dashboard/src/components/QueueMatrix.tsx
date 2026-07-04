@@ -20,10 +20,21 @@ interface QueueFormValues {
   strategy: RetryStrategy;
   maxRetries: number;
   baseDelayMs: number;
+  shardCount: number;
+  rateLimitPerMinute: string;
 }
 
 function emptyForm(): QueueFormValues {
-  return { name: "", priority: 0, concurrencyLimit: 1, strategy: "exponential", maxRetries: 3, baseDelayMs: 1000 };
+  return {
+    name: "",
+    priority: 0,
+    concurrencyLimit: 1,
+    strategy: "exponential",
+    maxRetries: 3,
+    baseDelayMs: 1000,
+    shardCount: 1,
+    rateLimitPerMinute: "",
+  };
 }
 
 function formFromQueue(queue: Queue): QueueFormValues {
@@ -34,6 +45,8 @@ function formFromQueue(queue: Queue): QueueFormValues {
     strategy: queue.retryPolicy?.strategy ?? "exponential",
     maxRetries: queue.retryPolicy?.maxRetries ?? 3,
     baseDelayMs: queue.retryPolicy?.baseDelayMs ?? 1000,
+    shardCount: queue.shardCount,
+    rateLimitPerMinute: queue.rateLimitPerMinute != null ? String(queue.rateLimitPerMinute) : "",
   };
 }
 
@@ -95,13 +108,37 @@ function QueueForm({
           className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
         />
       </label>
-      <label className="col-span-2">
+      <label>
         <span className="mb-1 block text-olive-dark/60">Retry base delay (ms)</span>
         <input
           type="number"
           min={0}
           value={values.baseDelayMs}
           onChange={(e) => onChange({ ...values, baseDelayMs: Number(e.target.value) })}
+          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+        />
+      </label>
+      <label>
+        <span className="mb-1 block text-olive-dark/60" title="Splits this queue's jobs across N virtual shards so multiple worker groups can claim in parallel without contending on the same rows">
+          Shard count
+        </span>
+        <input
+          type="number"
+          min={1}
+          max={64}
+          value={values.shardCount}
+          onChange={(e) => onChange({ ...values, shardCount: Number(e.target.value) })}
+          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+        />
+      </label>
+      <label className="col-span-2">
+        <span className="mb-1 block text-olive-dark/60">Rate limit (requests/min, blank = org default)</span>
+        <input
+          type="number"
+          min={1}
+          value={values.rateLimitPerMinute}
+          onChange={(e) => onChange({ ...values, rateLimitPerMinute: e.target.value })}
+          placeholder="org default"
           className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
         />
       </label>
@@ -147,6 +184,8 @@ function QueueCard({
         priority: form.priority,
         concurrencyLimit: form.concurrencyLimit,
         retryPolicy: { strategy: form.strategy, maxRetries: form.maxRetries, baseDelayMs: form.baseDelayMs },
+        shardCount: form.shardCount,
+        rateLimitPerMinute: form.rateLimitPerMinute.trim() ? Number(form.rateLimitPerMinute) : null,
       });
       setEditing(false);
       onChanged();
@@ -221,6 +260,18 @@ function QueueCard({
         <dd className="text-right font-medium text-olive-dark">
           {queue.retryPolicy ? `${queue.retryPolicy.baseDelayMs}ms` : "—"}
         </dd>
+        {queue.shardCount > 1 && (
+          <>
+            <dt className="text-olive-dark/60">Shards</dt>
+            <dd className="text-right font-medium text-olive-dark">{queue.shardCount}</dd>
+          </>
+        )}
+        {queue.rateLimitPerMinute != null && (
+          <>
+            <dt className="text-olive-dark/60">Rate limit</dt>
+            <dd className="text-right font-medium text-olive-dark">{queue.rateLimitPerMinute}/min</dd>
+          </>
+        )}
       </dl>
 
       {statsOpen && (
@@ -299,6 +350,8 @@ function NewQueueCard({ onCreated }: { onCreated: () => void }) {
         priority: form.priority,
         concurrencyLimit: form.concurrencyLimit,
         retryPolicy: { strategy: form.strategy, maxRetries: form.maxRetries, baseDelayMs: form.baseDelayMs },
+        shardCount: form.shardCount,
+        rateLimitPerMinute: form.rateLimitPerMinute.trim() ? Number(form.rateLimitPerMinute) : undefined,
       });
       setForm(emptyForm());
       setOpen(false);

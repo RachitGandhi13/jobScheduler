@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { Job, JobLog } from "../types";
+import type { DeadLetterEntry, Job, JobLog } from "../types";
 import { CloseIcon } from "./icons";
 
 interface JobDetailPanelProps {
@@ -19,15 +19,24 @@ const LEVEL_STYLES: Record<JobLog["level"], string> = {
 export function JobDetailPanel({ job, onClose }: JobDetailPanelProps) {
   const [logs, setLogs] = useState<JobLog[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deadLetter, setDeadLetter] = useState<DeadLetterEntry | null>(null);
 
   useEffect(() => {
     if (!job) return;
     setLogs(null);
     setError(null);
+    setDeadLetter(null);
     api
       .getJobLogs(job.id)
       .then((res) => setLogs(res.data))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+
+    if (job.status === "failed") {
+      api
+        .getDeadLetterEntry(job.id)
+        .then((res) => setDeadLetter(res.data))
+        .catch(() => setDeadLetter(null));
+    }
   }, [job]);
 
   const open = job !== null;
@@ -71,6 +80,14 @@ export function JobDetailPanel({ job, onClose }: JobDetailPanelProps) {
                   </dd>
                 </>
               )}
+              {job.parentJobId && (
+                <>
+                  <dt className="text-olive-dark/60">Waits on</dt>
+                  <dd className="text-right font-mono text-xs font-medium text-olive-dark">
+                    job {job.parentJobId.slice(0, 8)}
+                  </dd>
+                </>
+              )}
               {job.lastError && (
                 <>
                   <dt className="text-olive-dark/60">Last error</dt>
@@ -78,6 +95,18 @@ export function JobDetailPanel({ job, onClose }: JobDetailPanelProps) {
                 </>
               )}
             </dl>
+
+            {job.status === "failed" && (
+              <div className="mb-6 rounded-lg border border-terracotta/30 bg-terracotta-light/30 p-3">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-terracotta">
+                  Failure summary
+                </p>
+                {!deadLetter && <p className="text-sm text-olive-dark/60">Loading…</p>}
+                {deadLetter && (
+                  <p className="text-sm text-olive-dark">{deadLetter.aiSummary ?? "No summary available."}</p>
+                )}
+              </div>
+            )}
 
             <h4 className="mb-2 text-sm font-semibold text-olive-dark">Execution trace</h4>
             {error && <p className="text-sm text-terracotta">{error}</p>}

@@ -56,6 +56,8 @@ const createQueueBodySchema = z.object({
   priority: z.number().int().default(0),
   concurrencyLimit: z.number().int().min(1).default(1),
   retryPolicy: retryPolicyInputSchema.default({}),
+  shardCount: z.number().int().min(1).max(64).default(1),
+  rateLimitPerMinute: z.number().int().min(1).optional(),
 });
 
 /**
@@ -71,12 +73,14 @@ queuesRouter.post(
   validate({ body: createQueueBodySchema }),
   asyncHandler(async (req, res) => {
     const projectId = req.context.projectId!;
-    const { name, priority, concurrencyLimit, retryPolicy } = req.body as z.infer<typeof createQueueBodySchema>;
+    const { name, priority, concurrencyLimit, retryPolicy, shardCount, rateLimitPerMinute } = req.body as z.infer<
+      typeof createQueueBodySchema
+    >;
 
     const result = await db.transaction(async (tx) => {
       const [queue] = await tx
         .insert(queues)
-        .values({ projectId, name, priority, concurrencyLimit })
+        .values({ projectId, name, priority, concurrencyLimit, shardCount, rateLimitPerMinute })
         .returning();
 
       const [policy] = await tx
@@ -96,6 +100,13 @@ const updateQueueBodySchema = z.object({
   priority: z.number().int().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   retryPolicy: retryPolicyInputSchema.partial().optional(),
+  // Sharding: how many virtual sub-shards this queue's jobs are split across
+  // (see packages/db/src/shard.ts + worker-service/src/claim.ts). 1 = unsharded.
+  shardCount: z.number().int().min(1).max(64).optional(),
+  // Rate limiting: overrides the organization's default for this queue only.
+  // null explicitly clears the override (falls back to org/code default);
+  // omitted leaves it unchanged.
+  rateLimitPerMinute: z.number().int().min(1).nullable().optional(),
 });
 
 /**
@@ -113,7 +124,9 @@ queuesRouter.patch(
   validate({ params: queueParamsSchema, body: updateQueueBodySchema }),
   asyncHandler(async (req, res) => {
     const { projectId, queueId } = req.params as unknown as z.infer<typeof queueParamsSchema>;
-    const { name, priority, concurrencyLimit, retryPolicy } = req.body as z.infer<typeof updateQueueBodySchema>;
+    const { name, priority, concurrencyLimit, retryPolicy, shardCount, rateLimitPerMinute } = req.body as z.infer<
+      typeof updateQueueBodySchema
+    >;
 
     const [existing] = await db
       .select()
@@ -128,6 +141,8 @@ queuesRouter.patch(
     if (name !== undefined) queuePatch.name = name;
     if (priority !== undefined) queuePatch.priority = priority;
     if (concurrencyLimit !== undefined) queuePatch.concurrencyLimit = concurrencyLimit;
+    if (shardCount !== undefined) queuePatch.shardCount = shardCount;
+    if (rateLimitPerMinute !== undefined) queuePatch.rateLimitPerMinute = rateLimitPerMinute;
 
     const [updatedQueue] = await db.update(queues).set(queuePatch).where(eq(queues.id, queueId)).returning();
 

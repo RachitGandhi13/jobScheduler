@@ -1,5 +1,16 @@
 import { loadSession, type AuthSession } from "../auth";
-import type { ApiErrorBody, Job, JobLog, Metrics, Pagination, Project, Queue, QueueStats, Worker } from "../types";
+import type {
+  ApiErrorBody,
+  DeadLetterEntry,
+  Job,
+  JobLog,
+  Metrics,
+  Pagination,
+  Project,
+  Queue,
+  QueueStats,
+  Worker,
+} from "../types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000/api";
 
@@ -74,6 +85,7 @@ export interface CreateJobBody {
   maxAttempts?: number;
   schedule?: CreateJobSchedule;
   idempotencyKey?: string;
+  parentJobId?: string;
 }
 
 export interface CreateQueueBody {
@@ -81,6 +93,8 @@ export interface CreateQueueBody {
   priority?: number;
   concurrencyLimit?: number;
   retryPolicy?: { strategy?: string; maxRetries?: number; baseDelayMs?: number };
+  shardCount?: number;
+  rateLimitPerMinute?: number;
 }
 
 export interface UpdateQueueBody {
@@ -88,6 +102,8 @@ export interface UpdateQueueBody {
   priority?: number;
   concurrencyLimit?: number;
   retryPolicy?: { strategy?: string; maxRetries?: number; baseDelayMs?: number };
+  shardCount?: number;
+  rateLimitPerMinute?: number | null;
 }
 
 export const api = {
@@ -112,6 +128,8 @@ export const api = {
     return request<{ data: Job[]; pagination: Pagination }>(projectPath(`/jobs${suffix}`));
   },
   getJobLogs: (jobId: string) => request<{ data: JobLog[] }>(projectPath(`/jobs/${jobId}/logs`)),
+  getDeadLetterEntry: (jobId: string) =>
+    request<{ data: DeadLetterEntry | null }>(projectPath(`/jobs/${jobId}/dead-letter`)),
   retryJob: (jobId: string) => request<{ data: Job }>(projectPath(`/jobs/${jobId}/retry`), { method: "POST" }),
   createJob: (body: CreateJobBody) =>
     request<{ data: Job; idempotent?: boolean }>(projectPath("/jobs"), { method: "POST", body: JSON.stringify(body) }),

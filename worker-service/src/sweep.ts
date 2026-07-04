@@ -6,6 +6,8 @@ import { executeClaimedJob } from "./execute.js";
 export interface SweepOptions {
   maxClaimPerQueue: number;
   onJobCrash?: (jobId: string, err: unknown) => void;
+  /** Which shard this worker group claims (see claim.ts); 0 = unsharded default. */
+  workerShardIndex?: number;
 }
 
 export interface SweepResult {
@@ -23,7 +25,7 @@ export interface SweepResult {
 export async function runSweep(
   db: Database,
   workerId: string,
-  { maxClaimPerQueue, onJobCrash }: SweepOptions,
+  { maxClaimPerQueue, onJobCrash, workerShardIndex = 0 }: SweepOptions,
 ): Promise<SweepResult> {
   const inFlight = new Set<Promise<void>>();
   let claimedCount = 0;
@@ -36,7 +38,7 @@ export async function runSweep(
     if (availableSlots <= 0) continue;
 
     const claimLimit = Math.min(availableSlots, maxClaimPerQueue);
-    const claimed = await claimJobs(db, queue.id, claimLimit, workerId);
+    const claimed = await claimJobs(db, queue.id, claimLimit, workerId, workerShardIndex);
     claimedCount += claimed.length;
 
     for (const job of claimed) {

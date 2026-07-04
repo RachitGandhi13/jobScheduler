@@ -133,11 +133,13 @@ erDiagram
     JOB_EXECUTIONS ||--o{ JOB_LOGS : has
     JOBS ||--|| DEAD_LETTER_QUEUE : "dead-letters to"
     QUEUES ||--o{ DEAD_LETTER_QUEUE : isolates
+    JOBS ||--o{ JOBS : "parent_job_id (workflow dependency)"
 
     ORGANIZATIONS {
         uuid id PK
         varchar name
         varchar slug UK
+        int rate_limit_per_minute "nullable -- org-wide ingestion rate limit default"
     }
     USERS {
         uuid id PK
@@ -165,6 +167,8 @@ erDiagram
         int priority
         int concurrency_limit
         bool is_paused
+        int shard_count "default 1 -- virtual sub-shard count"
+        int rate_limit_per_minute "nullable -- overrides org default"
     }
     RETRY_POLICIES {
         uuid id PK
@@ -186,8 +190,10 @@ erDiagram
         uuid queue_id FK
         uuid scheduled_job_id FK "nullable"
         uuid claimed_by FK "nullable -> workers"
+        uuid parent_job_id FK "nullable, self-referencing -- workflow dependency"
         uuid batch_id "nullable, no FK table"
         varchar idempotency_key "nullable, unique per queue_id"
+        int shard_key "hash(id) % 1024, fixed space independent of shard_count"
         varchar type
         jsonb payload
         enum status "queued|scheduled|claimed|running|completed|failed"
@@ -233,6 +239,7 @@ erDiagram
         jsonb payload
         int attempts
         text fail_reason
+        text ai_summary "nullable -- see Bonus features: AI-generated failure summaries"
     }
 ```
 
@@ -314,6 +321,108 @@ Structural changes reshape what exists; operational ones just push work through 
 there — an on-call `member` should be able to pause a misbehaving queue or retry a failed job
 without needing `admin` first.
 
+## Bonus features
+
+All six of the brief's optional bonus features are implemented, on top of the two built earlier
+(distributed locking via `SELECT ... FOR UPDATE SKIP LOCKED`, and role-based access control above).
+
+### Workflow dependencies
+
+Any job can declare a `parentJobId` at creation (`POST /jobs`, see the API section below). Rather
+than a separate promotion step, the dependency is enforced directly in the claim query
+(`worker-service/src/claim.ts`): a job with a `parent_job_id` is left out of the candidate set
+entirely — not merely deprioritized — until a self-join confirms its parent's `status` is strictly
+`'completed'`. A parent that fails or dead-letters leaves its dependents waiting indefinitely rather
+than cascading the failure; the dashboard's Job Detail panel shows a "Waits on" reference so a
+stuck child is easy to trace back to its parent. Covered by
+`worker-service/src/__tests__/workflowDependencies.test.ts` (blocked, unblocked, and
+no-parent-unaffected cases, all against a real database).
+
+### Rate limiting
+
+`backend-api/src/middleware/rateLimiter.ts` is a token-bucket limiter gating `POST /jobs` and
+`POST /jobs/batch`. Resolution order: the target queue's own `rateLimitPerMinute` (set via
+`POST`/`PATCH /queues`) → the organization's default (`PATCH /organizations/me`) → a code-level
+fallback of 120 req/min. One request consumes one token regardless of whether it's a single job or
+a 500-job batch — this limits *ingestion request rate*, not job volume, so the batch endpoint's own
+purpose (cheap bulk enqueueing) isn't undermined by counting per-job. Exceeding the limit returns
+`429 rate_limit_exceeded` with a `Retry-After` header. The bucket is in-memory and per-process —
+correct for this project's single Render instance, but would under-count across a multi-instance
+deployment (documented as a known trade-off in `DEVELOPMENT.md`; a shared store like Redis is the
+natural next step). Covered by `backend-api/src/__tests__/rateLimiter.test.ts`.
+
+### Queue sharding
+
+Every job gets a `shardKey` (`hash(id) % 1024`, computed once at insert time in
+`packages/db/src/shard.ts`) independent of any one queue's shard count, so a queue's `shardCount`
+can change later without recomputing existing rows. A queue's `shardCount` (default 1 = unsharded,
+settable via `POST`/`PATCH /queues`, up to 64) says how many virtual sub-shards its jobs split
+across; a worker instance's `WORKER_SHARD_INDEX` env var says which one it claims from
+(`shard_key % shardCount = WORKER_SHARD_INDEX`, filtered directly in `claim.ts`'s query). Multiple
+worker groups, each pinned to a different shard index, never scan or `SKIP LOCKED` over each
+other's rows for the same queue at all — the default (`shardCount=1`, `WORKER_SHARD_INDEX=0`)
+reproduces pre-sharding behavior exactly. Covered by `worker-service/src/__tests__/sharding.test.ts`.
+
+### Event-driven execution
+
+`backend-api` calls `pg_notify('job_available', queueId)` (`backend-api/src/lib/notify.ts`)
+right after inserting an *immediate* job — the one case where a worker waking up sooner actually
+has something to claim. `worker-service`'s continuous poll loop (`src/index.ts`) can subscribe via
+`LISTEN` (`src/listen.ts`) to wake immediately instead of waiting out `POLL_INTERVAL_MS`.
+
+This is opt-in via a **separate** `LISTEN_DATABASE_URL` env var, deliberately not reusing
+`DATABASE_URL`: Postgres `LISTEN`/`NOTIFY` needs a persistent session-level connection, which a
+PgBouncer transaction-pooling connection string — what `DATABASE_URL` is for Neon's `-pooler` host,
+used everywhere else in this project — does not reliably provide. `LISTEN_DATABASE_URL` should
+point at Neon's *direct* (non-pooled) connection string. Unset (the default), the optimization is
+simply disabled and the worker runs exactly as it always has — this is purely a latency speedup,
+never a correctness requirement, so an unconfigured deployment loses nothing but a few hundred
+milliseconds on immediate-job pickup. Does not apply to `runOnce.ts` (the GitHub Actions one-shot
+entrypoint): a process that exits immediately after its sweep has no persistent loop to wake early.
+Verified live locally: a parent/child pair created over the API showed up completed within one
+second of insertion, and the worker log confirmed `listening on Postgres channel "job_available"`
+on startup.
+
+### WebSocket live updates
+
+`backend-api/src/ws/liveServer.ts` attaches a `/ws` WebSocket endpoint to the same HTTP server
+Express listens on (`http.createServer(app)` in `index.ts`, rather than a second Render service).
+A client connects with `?token=<jwt>&projectId=<id>`, gets authenticated the same way every REST
+call is, and then receives a `{ type: "snapshot", data: { workers, metrics } }` push every
+`WS_PUSH_INTERVAL_MS` (default 3s) — the same two reads `GET /workers` and `GET /metrics` already
+do, just pushed instead of pulled.
+
+`backend-api` still polls its own database on an interval to build each push: `worker-service` is a
+separate, often-ephemeral process (GitHub Actions runs, not a co-located thread), so there's no
+in-process event for `backend-api` to subscribe to instead. What the socket actually removes is the
+*frontend's* HTTP request/response round trip. `frontend-dashboard`'s `useLiveOverview` hook
+(`src/hooks/useLiveOverview.ts`) opens the connection and reconnects on drop; the Overview tab
+prefers the live snapshot while connected and silently falls back to the pre-existing HTTP polling
+otherwise (an unreachable `/ws`, a proxy that doesn't support upgrades, etc. all degrade
+gracefully) — the "Live" / "Polling" badge on the Cluster Health card shows which one is active.
+
+### AI-generated failure summaries
+
+`worker-service/src/failureSummary.ts` generates a human-readable explanation + mitigation for
+every job that dead-letters (not on ordinary retries — only the terminal failure), stored on
+`dead_letter_queue.ai_summary` and shown in the dashboard's Job Detail panel. Two paths, chosen
+automatically:
+
+- **`ANTHROPIC_API_KEY` set**: a real call to `claude-haiku-4-5` (the cheapest current model —
+  everything else in this project has stayed zero-cost, so this shouldn't be the one place that
+  assumes a paid dependency exists).
+- **unset (the default)**: a deterministic, zero-cost heuristic that pattern-matches the failure
+  string against common signatures (timeout, connection refused, rate limited, unauthorized,
+  validation error, null reference, out of memory, deadlock) and returns a canned explanation +
+  mitigation; falls back to a generic-but-informative message if nothing matches.
+
+Either path is best-effort and computed **before** the dead-letter transaction opens, never inside
+it — a summary call (especially the real API path) must not hold a database connection open across
+a network round trip. A summarization failure of any kind (bad key, API outage, network error)
+never blocks the dead-letter insert itself. Covered by
+`worker-service/src/__tests__/failureSummary.test.ts` (heuristic path, since tests don't set
+`ANTHROPIC_API_KEY`).
+
 ## API
 
 All responses are JSON. Errors use a structured shape:
@@ -344,7 +453,8 @@ separation is what lets a future handler registry dispatch on `type` without tou
   "schedule": {                           // optional, default { "mode": "immediate" }
     "mode": "immediate"
   },
-  "idempotencyKey": "order-123"           // optional, also accepted as an Idempotency-Key header
+  "idempotencyKey": "order-123",          // optional, also accepted as an Idempotency-Key header
+  "parentJobId": "9c1f...uuid"            // optional -- see "Bonus features: Workflow dependencies"
 }
 ```
 
@@ -371,6 +481,13 @@ existing job is returned as-is (`200`, not `201`) instead of inserting a duplica
 makes retrying a `POST /jobs` call safe after a client-side timeout. Jobs created without a key are
 never deduped against anything (`jobs_queue_id_idempotency_key_idx` is a unique index on
 `(queue_id, idempotency_key)`, and Postgres treats every `NULL` as distinct).
+
+If `parentJobId` is supplied, this job is a workflow dependent: it will not be claimed until that
+job's `status` is strictly `'completed'` (enforced in `worker-service/src/claim.ts`, not by a
+trigger). `404 parent_job_not_found` if it doesn't exist in this project.
+
+This endpoint is rate-limited (see "Bonus features: Rate limiting") — `429 rate_limit_exceeded`
+with a `Retry-After` header once the target queue's (or its organization's) limit is exceeded.
 
 Response: `201 { "data": <job row> }` (or `200 { "data": <job row>, "idempotent": true }` on an
 idempotency-key replay). `404 queue_not_found` if `queueId` isn't in this project. `400
@@ -407,7 +524,9 @@ Enqueues many immediate jobs on one queue in a single transaction, sharing a gen
 }
 ```
 
-Response: `201 { "data": { "batchId": "...", "count": 2, "jobs": [ /* job rows */ ] } }`.
+Response: `201 { "data": { "batchId": "...", "count": 2, "jobs": [ /* job rows */ ] } }`. Also
+rate-limited, counted as one request against the target queue's/organization's limit regardless of
+how many jobs are in the batch (see "Bonus features: Rate limiting").
 
 ### `POST /api/projects/:projectId/jobs/:jobId/retry`
 
@@ -415,6 +534,12 @@ Manually forces a `failed` (dead-lettered) job back to `queued`: attempts reset 
 claimable, and any existing `dead_letter_queue` row for it is cleared (it can dead-letter again
 under a fresh set of attempts). `400 job_not_retryable` if the job isn't currently `failed`.
 Response: `200 { "data": <job row> }`.
+
+### `GET /api/projects/:projectId/jobs/:jobId/dead-letter`
+
+The job's `dead_letter_queue` row — payload snapshot, `failReason`, `attempts`, and its `aiSummary`
+(see "Bonus features: AI-generated failure summaries") — or `null` if this job never dead-lettered.
+`404 job_not_found` if the job isn't in this project. Response: `200 { "data": <dead_letter_queue row> | null }`.
 
 ### `GET /api/projects`, `POST /api/projects`
 
@@ -468,7 +593,9 @@ and its 1:1 retry policy in one transaction.
     "strategy": "exponential",   // "fixed" | "linear" | "exponential"
     "maxRetries": 3,
     "baseDelayMs": 1000
-  }
+  },
+  "shardCount": 1,               // optional, default 1 (unsharded) -- see "Bonus features: Queue sharding"
+  "rateLimitPerMinute": 120      // optional, overrides the org default -- see "Bonus features: Rate limiting"
 }
 ```
 
@@ -477,9 +604,10 @@ Response: `201 { "data": <queue row, shaped like GET /queues> }`.
 ### `PATCH /api/projects/:projectId/queues/:queueId`
 
 Updates the config fields that used to be frozen after creation — `name`, `priority`,
-`concurrencyLimit`, and the linked retry policy (any subset; requires `owner`/`admin`). Pause/
-resume stay their own endpoints above since they're a high-frequency operational toggle, not a
-config edit. Response: `200 { "data": <queue row> }`. `404 queue_not_found` if `queueId` isn't in
+`concurrencyLimit`, the linked retry policy, `shardCount` (1-64), and `rateLimitPerMinute` (`null`
+explicitly clears the override back to the org default) — any subset, requires `owner`/`admin`.
+Pause/resume stay their own endpoints above since they're a high-frequency operational toggle, not
+a config edit. Response: `200 { "data": <queue row> }`. `404 queue_not_found` if `queueId` isn't in
 this project.
 
 ### `GET /api/projects/:projectId/queues/:queueId/stats`
@@ -526,6 +654,22 @@ Fleet-wide worker roster (id, hostname, pid, status, lastHeartbeatAt). **Not** s
 process polls and claims across any org/project's queues, so "this project's workers" isn't a
 concept the schema supports. Response: `200 { "data": <worker row>[] }`.
 
+### `GET /api/organizations/me`, `PATCH /api/organizations/me`
+
+The caller's own organization. `PATCH` (requires `owner`/`admin`) accepts `{ name?, rateLimitPerMinute? }`
+— `rateLimitPerMinute` is the org-wide default a queue's own override falls back to (see "Bonus
+features: Rate limiting"); `null` clears it back to the code-level fallback. Response:
+`200 { "data": <organization row> }` for both.
+
+### `GET /ws` (WebSocket, not REST)
+
+`wss://<backend-api host>/ws?token=<jwt>&projectId=<id>` — see "Bonus features: WebSocket live
+updates". Authenticates the same JWT as every REST call (passed as a query param, since the browser
+`WebSocket` constructor can't set an `Authorization` header on the handshake), then pushes
+`{ "type": "snapshot", "data": { "workers": [...], "metrics": {...} } }` every
+`WS_PUSH_INTERVAL_MS` (default 3000ms). Closes with `4001` on a missing/invalid token, `4003` if
+the project doesn't belong to the token's organization.
+
 ## Frontend dashboard
 
 `frontend-dashboard/` is a Vite + React 19 + TypeScript + Tailwind CSS v4 SPA (`recharts` for
@@ -552,14 +696,22 @@ no server-side rendering, no separate backend-for-frontend.
   slide-in drawer behind a hamburger button below that breakpoint. Content grids collapse from
   3/2 columns down to 1 via Tailwind's responsive column classes, no separate mobile markup.
 - **Pages** (`src/App.tsx`, tab-based, no router — three tabs don't need one): **Overview**
-  (`ClusterHealth` + `ThroughputChart`), **Queues** (`QueueMatrix` — pause/resume, a "+ New queue"
-  card and a per-card "Edit" form for `owner`/`admin`, and an on-demand "Stats" panel backed by
+  (`ClusterHealth` + `ThroughputChart`, with a "Live"/"Polling" badge showing whether the WebSocket
+  channel below is currently connected), **Queues** (`QueueMatrix` — pause/resume, a "+ New queue"
+  card and a per-card "Edit" form for `owner`/`admin` covering priority/concurrency/retry policy
+  plus shard count and rate limit, and an on-demand "Stats" panel backed by
   `GET .../queues/:queueId/stats` for every role), **Jobs** (`JobExplorer` + `JobDetailPanel`
-  slide-out, with a "Retry" action on failed jobs, and a "+ Create job" button opening
-  `CreateJobModal` — the one form covering all four `schedule` modes, a JSON payload textarea, and
-  an optional idempotency key, so enqueuing a job no longer requires the API directly).
+  slide-out — showing a "Waits on" reference for workflow-dependent jobs and an AI-generated
+  failure summary for dead-lettered ones — with a "Retry" action on failed jobs, and a
+  "+ Create job" button opening `CreateJobModal`: one form covering all four `schedule` modes, a
+  JSON payload textarea, an optional idempotency key, and an optional parent job id, so enqueuing a
+  job (including a dependent one) no longer requires the API directly).
 - **Data fetching**: a small custom `usePolling` hook (5s for queues/workers/metrics, 4s for the
-  job grid) — no React Query/SWR dependency, since three polled resources didn't justify one.
+  job grid) as the baseline, plus `useLiveOverview` (`src/hooks/useLiveOverview.ts`) layering a
+  WebSocket channel on top for the Overview tab specifically — connects to `/ws`, reconnects with a
+  fixed delay on drop, and the polling data underneath is what the UI falls back to whenever the
+  socket isn't connected. No React Query/SWR dependency — three polled resources plus one
+  supplementary socket didn't justify one.
 - **Chart palette**: the throughput chart does *not* use the brand's exact
   `#C0CFC0`/`#E5CEC6`/`#DDA28F` — those read as near-gray and fail CVD-safety at the hex level (see
   DEVELOPMENT.md). It uses deepened variants of the same three hue families instead, validated with
@@ -599,6 +751,23 @@ What's covered, each directly exercising a mechanic this project depends on for 
   _idx` unique index actually enforces what `POST /jobs` depends on: a second insert reusing a key
   on the same queue is rejected (Postgres `23505`), the same key on a *different* queue is not a
   collision, and any number of keyless jobs on one queue coexist (`NULL <> NULL` in a unique index).
+- **`worker-service/src/__tests__/workflowDependencies.test.ts`** — a job with a `parentJobId`
+  whose parent is `running` (not `completed`) is asserted absent from `claimJobs`'s candidate set
+  entirely; the same job becomes claimable once the parent is updated to `completed`; a job with no
+  parent is claimed exactly as before the dependency gate existed.
+- **`worker-service/src/__tests__/sharding.test.ts`** — with a queue's `shardCount` set to 4 and
+  four jobs seeded at `shardKey` 0-3, asserts a worker pinned to shard 0 claims only the `shardKey
+  =0` job and a worker pinned to shard 2 claims only `shardKey=2`; a second case asserts the default
+  (`shardCount=1`, `workerShardIndex=0`) claims a job regardless of its `shardKey`, matching
+  pre-sharding behavior exactly.
+- **`worker-service/src/__tests__/failureSummary.test.ts`** — asserts the heuristic path (no
+  `ANTHROPIC_API_KEY` in the test environment) correctly classifies a timeout, a 429, and a
+  null-reference crash into their distinct explanations, and falls back to a generic-but-informative
+  summary when no signature matches.
+- **`backend-api/src/__tests__/rateLimiter.test.ts`** — asserts a queue's token bucket allows
+  exactly its configured `rateLimitPerMinute` requests before returning a `429` with a
+  `Retry-After` header, and that two different queues' buckets are tracked independently (exhausting
+  one never blocks the other).
 
 Each test creates its own organization/project/queue/worker fixtures (unique names per run) and
 deletes them in `afterEach` — safe to run repeatedly with no manual cleanup.
@@ -654,12 +823,17 @@ deletes them in `afterEach` — safe to run repeatedly with no manual cleanup.
 | `backend-api` | Render | `MOCK_AUTH` | no | **omit entirely** — never set in production |
 | `backend-api` | Render | `WORKER_HEARTBEAT_TIMEOUT_MS` | no | default `15000` |
 | `backend-api` | Render | `ZOMBIE_CLEANUP_INTERVAL_MS` | no | default `10000` |
+| `backend-api` | Render | `WS_PUSH_INTERVAL_MS` | no | default `3000` — see "Bonus features: WebSocket live updates" |
 | `worker-service` | GitHub Actions | `DATABASE_URL` | yes | repo secret: Settings → Secrets and variables → Actions |
+| `worker-service` | (n/a, defaults used) | `POLL_INTERVAL_MS` | no | default `1000` — continuous mode only (`index.ts`), not `runOnce.ts` |
 | `worker-service` | (n/a, defaults used) | `HEARTBEAT_INTERVAL_MS` | no | default `5000` — only settable if self-hosting (Render/locally), GitHub Actions workflow doesn't pass it |
 | `worker-service` | (n/a, defaults used) | `MAX_CLAIM_PER_QUEUE` | no | default `5`, same as above |
 | `worker-service` | (n/a, defaults used) | `MAX_RUN_MS` | no | default `45000`, same as above — comfortably under the workflow's 5-min schedule |
+| `worker-service` | (n/a, opt-in) | `LISTEN_DATABASE_URL` | no | Neon's *direct* (non-pooled) connection string — enables instant wake-up on immediate jobs; see "Bonus features: Event-driven execution". Unset = polling only, still fully correct |
+| `worker-service` | (n/a, opt-in) | `WORKER_SHARD_INDEX` | no | default `0` — which shard of a sharded queue this worker group claims from; see "Bonus features: Queue sharding" |
+| `worker-service` | (n/a, opt-in) | `ANTHROPIC_API_KEY` | no | enables a real AI-generated DLQ failure summary instead of the zero-cost heuristic; see "Bonus features: AI-generated failure summaries" |
 | `frontend-dashboard` | Vercel | `VITE_API_BASE_URL` | yes | Render `backend-api` URL + `/api` |
-| `frontend-dashboard` | Vercel | `VITE_API_BASE_URL` | yes | Render `backend-api` URL + `/api` |
+| `frontend-dashboard` | Vercel | `VITE_WS_BASE_URL` | no | derived from `VITE_API_BASE_URL` (http→ws, strips `/api`) if unset |
 
 Each service's `.env.example` carries the same guidance inline.
 

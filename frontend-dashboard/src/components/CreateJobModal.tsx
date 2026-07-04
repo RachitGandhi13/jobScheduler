@@ -24,6 +24,7 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
   const [runAt, setRunAt] = useState("");
   const [cronExpression, setCronExpression] = useState("");
   const [idempotencyKey, setIdempotencyKey] = useState("");
+  const [parentJobId, setParentJobId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -64,6 +65,7 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
         maxAttempts: maxAttempts ? Number(maxAttempts) : undefined,
         schedule,
         idempotencyKey: idempotencyKey.trim() || undefined,
+        parentJobId: parentJobId.trim() || undefined,
       });
       onCreated(res.idempotent ? `"${res.data.type}" already existed for this key — reused it` : `"${res.data.type}" enqueued`);
     } catch (err) {
@@ -199,6 +201,16 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
               onChange={(e) => setIdempotencyKey(e.target.value)}
               placeholder="order-123"
               className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
+            />
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block font-medium text-olive-dark">Waits on job (optional)</span>
+            <input
+              value={parentJobId}
+              onChange={(e) => setParentJobId(e.target.value)}
+              placeholder="Parent job id — this job won't claim until that one completes"
+              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 font-mono text-xs outline-none focus:border-olive"
             />
           </label>
 

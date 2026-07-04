@@ -2,11 +2,13 @@ import crypto from "node:crypto";
 import { Router } from "express";
 import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { z } from "zod";
-import { deadLetterQueue, jobLogs, jobs, queues, retryPolicies, scheduledJobs } from "@scheduler/db";
+import { computeShardKey, deadLetterQueue, jobLogs, jobs, queues, retryPolicies, scheduledJobs } from "@scheduler/db";
 import { db } from "../db.js";
 import { ApiError } from "../lib/apiError.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { getNextCronRun } from "../lib/cron.js";
+import { notifyJobAvailable } from "../lib/notify.js";
+import { rateLimitJobIngestion } from "../middleware/rateLimiter.js";
 import { validate } from "../middleware/validate.js";
 
 export const jobsRouter = Router({ mergeParams: true });
@@ -42,6 +44,10 @@ const createJobBodySchema = z.object({
   // Idempotency-Key header; the body field wins if both are sent). Scoped to
   // this queue -- see schema.ts's jobs_queue_id_idempotency_key_idx.
   idempotencyKey: z.string().min(1).max(255).optional(),
+  // Workflow dependency: this job stays out of claim.ts's candidate set until
+  // the referenced job's status is strictly 'completed'. Must belong to the
+  // same project (checked below), but may be on a different queue.
+  parentJobId: z.string().uuid().optional(),
 });
 
 /**
@@ -59,6 +65,7 @@ const createJobBodySchema = z.object({
  *     | { mode: "scheduled", runAt: string (ISO date) }
  *     | { mode: "recurring", cronExpression: string }
  *   idempotencyKey?: string,    // also accepted as an Idempotency-Key header
+ *   parentJobId?: string (uuid) // this job waits until that job is 'completed'
  * }
  *
  * immediate  -> run_at = now(), status = 'queued' (claimable this instant).
@@ -79,11 +86,19 @@ const createJobBodySchema = z.object({
 jobsRouter.post(
   "/jobs",
   validate({ body: createJobBodySchema }),
+  rateLimitJobIngestion,
   asyncHandler(async (req, res) => {
     const projectId = req.context.projectId!;
-    const { type, queueId, payload, priority, maxAttempts, schedule, idempotencyKey: bodyKey } = req.body as z.infer<
-      typeof createJobBodySchema
-    >;
+    const {
+      type,
+      queueId,
+      payload,
+      priority,
+      maxAttempts,
+      schedule,
+      idempotencyKey: bodyKey,
+      parentJobId,
+    } = req.body as z.infer<typeof createJobBodySchema>;
     const idempotencyKey = bodyKey ?? req.header("idempotency-key");
 
     const [queue] = await db
@@ -94,6 +109,18 @@ jobsRouter.post(
 
     if (!queue) {
       throw ApiError.notFound("queue_not_found", `Queue ${queueId} not found in this project`);
+    }
+
+    if (parentJobId) {
+      const [parentJob] = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .innerJoin(queues, eq(jobs.queueId, queues.id))
+        .where(and(eq(jobs.id, parentJobId), eq(queues.projectId, projectId)))
+        .limit(1);
+      if (!parentJob) {
+        throw ApiError.notFound("parent_job_not_found", `Job ${parentJobId} not found in this project`);
+      }
     }
 
     if (idempotencyKey) {
@@ -112,9 +139,11 @@ jobsRouter.post(
 
     try {
       if (schedule.mode === "immediate") {
+        const id = crypto.randomUUID();
         const [job] = await db
           .insert(jobs)
           .values({
+            id,
             queueId,
             type,
             payload,
@@ -123,8 +152,14 @@ jobsRouter.post(
             runAt: new Date(),
             status: "queued",
             idempotencyKey,
+            parentJobId,
+            shardKey: computeShardKey(id),
           })
           .returning();
+        // Only immediate jobs benefit from waking a worker early -- delayed/
+        // scheduled/recurring jobs have a future run_at, so there's nothing
+        // for a worker to claim yet regardless of how fast it wakes up.
+        void notifyJobAvailable(queueId);
         return res.status(201).json({ data: job });
       }
 
@@ -133,9 +168,11 @@ jobsRouter.post(
         if (runAt.getTime() <= Date.now()) {
           throw ApiError.badRequest("run_at_in_past", "The resolved run time must be in the future");
         }
+        const id = crypto.randomUUID();
         const [job] = await db
           .insert(jobs)
           .values({
+            id,
             queueId,
             type,
             payload,
@@ -144,6 +181,8 @@ jobsRouter.post(
             runAt,
             status: "scheduled",
             idempotencyKey,
+            parentJobId,
+            shardKey: computeShardKey(id),
           })
           .returning();
         return res.status(201).json({ data: job });
@@ -151,6 +190,7 @@ jobsRouter.post(
 
       // recurring
       const firstRunAt = getNextCronRun(schedule.cronExpression);
+      const id = crypto.randomUUID();
 
       const [job] = await db.transaction(async (tx) => {
         const [rule] = await tx
@@ -168,6 +208,7 @@ jobsRouter.post(
         return tx
           .insert(jobs)
           .values({
+            id,
             queueId,
             type,
             payload,
@@ -177,6 +218,8 @@ jobsRouter.post(
             status: "scheduled",
             scheduledJobId: rule.id,
             idempotencyKey,
+            parentJobId,
+            shardKey: computeShardKey(id),
           })
           .returning();
       });
@@ -226,6 +269,7 @@ const createBatchBodySchema = z.object({
 jobsRouter.post(
   "/jobs/batch",
   validate({ body: createBatchBodySchema }),
+  rateLimitJobIngestion,
   asyncHandler(async (req, res) => {
     const projectId = req.context.projectId!;
     const { queueId, jobs: jobSpecs } = req.body as z.infer<typeof createBatchBodySchema>;
@@ -248,20 +292,26 @@ jobsRouter.post(
       tx
         .insert(jobs)
         .values(
-          jobSpecs.map((spec) => ({
-            queueId,
-            type: spec.type,
-            payload: spec.payload,
-            priority: spec.priority,
-            maxAttempts: spec.maxAttempts ?? defaultMaxAttempts,
-            runAt,
-            status: "queued" as const,
-            batchId,
-          })),
+          jobSpecs.map((spec) => {
+            const id = crypto.randomUUID();
+            return {
+              id,
+              queueId,
+              type: spec.type,
+              payload: spec.payload,
+              priority: spec.priority,
+              maxAttempts: spec.maxAttempts ?? defaultMaxAttempts,
+              runAt,
+              status: "queued" as const,
+              batchId,
+              shardKey: computeShardKey(id),
+            };
+          }),
         )
         .returning(),
     );
 
+    void notifyJobAvailable(queueId);
     res.status(201).json({ data: { batchId, count: inserted.length, jobs: inserted } });
   }),
 );
@@ -364,6 +414,38 @@ jobsRouter.get(
 
     const rows = await db.select().from(jobLogs).where(eq(jobLogs.jobId, jobId)).orderBy(asc(jobLogs.createdAt));
     res.json({ data: rows });
+  }),
+);
+
+/**
+ * GET /api/projects/:projectId/jobs/:jobId/dead-letter
+ *
+ * The job's dead_letter_queue row (payload snapshot, fail reason, and its
+ * aiSummary -- see worker-service/src/failureSummary.ts), or null if this job
+ * never dead-lettered. Kept as its own endpoint rather than folding onto the
+ * job row itself, matching how retryPolicy is nested onto queues: the data
+ * lives in its own table, and only jobs that actually failed pay for the
+ * extra query.
+ */
+jobsRouter.get(
+  "/jobs/:jobId/dead-letter",
+  validate({ params: jobLogsParamsSchema }),
+  asyncHandler(async (req, res) => {
+    const { projectId, jobId } = req.params as unknown as z.infer<typeof jobLogsParamsSchema>;
+
+    const [job] = await db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .innerJoin(queues, eq(jobs.queueId, queues.id))
+      .where(and(eq(jobs.id, jobId), eq(queues.projectId, projectId)))
+      .limit(1);
+
+    if (!job) {
+      throw ApiError.notFound("job_not_found", `Job ${jobId} not found in this project`);
+    }
+
+    const [entry] = await db.select().from(deadLetterQueue).where(eq(deadLetterQueue.jobId, jobId)).limit(1);
+    res.json({ data: entry ?? null });
   }),
 );
 

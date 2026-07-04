@@ -4,6 +4,7 @@ import { GlassCard } from "./GlassCard";
 interface ClusterHealthProps {
   workers: Worker[] | null;
   metrics: Metrics | null;
+  live?: boolean;
 }
 
 function StatTile({ label, value, danger = false }: { label: string; value: number; danger?: boolean }) {
@@ -37,7 +38,7 @@ function WorkerBadge({ count, label, pulse = false, muted = false }: { count: nu
   );
 }
 
-export function ClusterHealth({ workers, metrics }: ClusterHealthProps) {
+export function ClusterHealth({ workers, metrics, live = false }: ClusterHealthProps) {
   const idle = workers?.filter((w) => w.status === "idle").length ?? 0;
   const busy = workers?.filter((w) => w.status === "busy").length ?? 0;
   const offline = workers?.filter((w) => w.status === "offline").length ?? 0;
@@ -50,7 +51,17 @@ export function ClusterHealth({ workers, metrics }: ClusterHealthProps) {
 
   return (
     <GlassCard className="p-5 md:p-6">
-      <h3 className="mb-1 text-sm font-semibold text-olive-dark">Cluster health</h3>
+      <div className="mb-1 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-olive-dark">Cluster health</h3>
+        <span
+          className={`flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            live ? "bg-sage/50 text-olive-dark" : "bg-white/60 text-olive-dark/50"
+          }`}
+        >
+          <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-sage animate-pulse" : "bg-olive-dark/30"}`} />
+          {live ? "Live" : "Polling"}
+        </span>
+      </div>
       <p className="mb-4 text-xs text-olive-dark/60">Worker fleet + job throughput, live</p>
 
       <div className="mb-5 flex flex-wrap items-center gap-3">

@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { InferSelectModel } from "drizzle-orm";
 import {
+  computeShardKey,
   deadLetterQueue,
   jobExecutions,
   jobLogs,
@@ -10,6 +12,7 @@ import {
   type Database,
 } from "@scheduler/db";
 import { getNextCronRun } from "./cron.js";
+import { summarizeFailure } from "./failureSummary.js";
 import { computeNextRunAt } from "./retry.js";
 
 type Job = InferSelectModel<typeof jobs>;
@@ -106,10 +109,12 @@ export async function executeClaimedJob(db: Database, job: Job, workerId: string
           // 'scheduled' matches how delayed/recurring jobs are created via
           // the API -- claimable the instant run_at is due, no promotion step.
           const nextRunAt = getNextCronRun(rule.cronExpression, job.runAt);
+          const childId = crypto.randomUUID();
 
           const [child] = await tx
             .insert(jobs)
             .values({
+              id: childId,
               queueId: rule.queueId,
               type: rule.type,
               payload: rule.payload,
@@ -118,6 +123,7 @@ export async function executeClaimedJob(db: Database, job: Job, workerId: string
               runAt: nextRunAt,
               status: "scheduled",
               scheduledJobId: rule.id,
+              shardKey: computeShardKey(childId),
             })
             .returning({ id: jobs.id });
 
@@ -134,6 +140,15 @@ export async function executeClaimedJob(db: Database, job: Job, workerId: string
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const finishedAt = new Date();
+    const willDeadLetter = attemptNumber >= job.maxAttempts;
+
+    // Computed outside the transaction on purpose: summarizeFailure() may
+    // make a real network call (the Claude API path), and a DB transaction
+    // must never sit open across one -- that would hold a connection (a
+    // scarce resource under Neon's pooling) for however long that call takes.
+    const aiSummary = willDeadLetter
+      ? await summarizeFailure({ jobType: job.type, failReason: message, attempts: attemptNumber }).catch(() => null)
+      : null;
 
     await db.transaction(async (tx) => {
       await tx
@@ -148,7 +163,7 @@ export async function executeClaimedJob(db: Database, job: Job, workerId: string
 
       await log(tx, job.id, execution.id, "error", `Attempt ${attemptNumber} failed: ${message}`);
 
-      if (attemptNumber >= job.maxAttempts) {
+      if (willDeadLetter) {
         await tx
           .update(jobs)
           .set({ status: "failed", attempts: attemptNumber, lastError: message, updatedAt: finishedAt })
@@ -160,6 +175,7 @@ export async function executeClaimedJob(db: Database, job: Job, workerId: string
           payload: job.payload,
           attempts: attemptNumber,
           failReason: message,
+          aiSummary,
         });
 
         await log(tx, job.id, execution.id, "error", "Max attempts exceeded — moved to dead letter queue");

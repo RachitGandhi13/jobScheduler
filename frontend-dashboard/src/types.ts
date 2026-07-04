@@ -14,6 +14,11 @@ export interface Job {
   runAt: string;
   scheduledJobId: string | null;
   batchId: string | null;
+  idempotencyKey: string | null;
+  // Workflow dependency: this job isn't claimable until the referenced job's
+  // status is strictly 'completed' (see worker-service/src/claim.ts).
+  parentJobId: string | null;
+  shardKey: number;
   maxAttempts: number;
   attempts: number;
   claimedBy: string | null;
@@ -25,6 +30,17 @@ export interface Job {
   updatedAt: string;
 }
 
+export interface DeadLetterEntry {
+  id: string;
+  jobId: string;
+  queueId: string;
+  payload: Record<string, unknown>;
+  attempts: number;
+  failReason: string;
+  aiSummary: string | null;
+  deadLetteredAt: string;
+}
+
 export interface Queue {
   id: string;
   projectId: string;
@@ -32,6 +48,8 @@ export interface Queue {
   priority: number;
   concurrencyLimit: number;
   isPaused: boolean;
+  shardCount: number;
+  rateLimitPerMinute: number | null;
   createdAt: string;
   updatedAt: string;
   retryPolicy: { strategy: RetryStrategy; maxRetries: number; baseDelayMs: number } | null;

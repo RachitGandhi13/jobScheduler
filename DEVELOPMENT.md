@@ -287,6 +287,107 @@ this failure mode) — the price of putting the queue in the same database as ev
   driven, not just typechecked), confirmed both appeared in the Job Explorer with the correct
   `status`/`run_at`.
 
+- **Workflow dependencies: gated in the claim query, not a status/trigger.** `jobs.parent_job_id`
+  is a plain self-referencing FK; the actual "wait until parent completed" behavior lives entirely
+  in `worker-service/src/claim.ts`'s `SELECT`, via a `LEFT JOIN` against a second alias of `jobs`
+  (`parentJobs`) and a `WHERE parent_job_id IS NULL OR parentJobs.status = 'completed'`. Considered
+  a Postgres trigger that flips a "ready" flag on the child when its parent completes, but that's a
+  second source of truth that could drift from the parent's actual status under a crash between the
+  update and the trigger firing — reading the parent's live status at claim time can't drift,
+  because there's nothing to keep in sync. The self-join only locks the child row (`FOR UPDATE OF
+  jobs`, not `parentJobs`), so this adds zero extra lock contention on parent rows, which are very
+  likely still being read/written by their own execution elsewhere. Deliberately does not cascade a
+  parent's failure onto its dependents — a dependent whose parent dead-letters instead of completes
+  waits indefinitely rather than auto-failing, which is a known, documented trade-off (a cascading-
+  failure sweep is the natural next increment, not built here). Verified two ways: the Vitest suite
+  (`workflowDependencies.test.ts`) against a real DB, and live end-to-end — created a parent
+  designed to always fail (`maxAttempts: 1`, `simulateFailure: true`) and a child depending on it,
+  confirmed via `psql` that the child sat at `status='queued'`, `attempts=0` indefinitely while a
+  real worker process ran against the same database, never claiming it.
+
+- **Rate limiting is an in-memory token bucket, not Redis.** Nothing else in this stack assumes
+  Redis is available (see the SKIP-LOCKED-vs-Redis-queue trade-off earlier in this log), and adding
+  it as a hard dependency just for rate limiting felt disproportionate to a project that's
+  deliberately run on free-tier everything. The trade-off, stated plainly: this is correct and
+  sufficient for Render's single free-tier instance, but under-counts if this API ever scales to
+  multiple instances behind a load balancer (each instance enforces the limit independently, so the
+  effective ceiling becomes `limit × instanceCount`). Resolution order (queue override → org
+  default → a 120/min code-level fallback) means the feature demonstrably works with zero
+  configuration — a fresh signup's default queue still gets a real, enforced limit, not just a
+  configurable-but-inert column. Verified live: a queue configured to `rateLimitPerMinute: 3`
+  returned `201` for the first three `POST /jobs` calls in a burst and `429 rate_limit_exceeded`
+  (with a computed `Retry-After`) for the fourth and fifth.
+
+- **Queue sharding's hash space is independent of any one queue's `shardCount`.**
+  `jobs.shard_key = hash(id) % 1024` is computed once, at insert time, using a fixed modulus that
+  has nothing to do with the owning queue's `shardCount`. The alternative — hashing directly into
+  `shardCount` buckets — would mean every existing job's `shard_key` becomes meaningless the moment
+  an operator changes that queue's `shardCount`, forcing either a backfill migration or a "shard
+  count can never change" rule. Computing modulo a large fixed space and then reducing *that* modulo
+  the current `shardCount` at claim time (`shard_key % shard_count = WORKER_SHARD_INDEX`) means
+  `shardCount` is freely adjustable at any time with zero data migration — only the claim query's
+  filter changes, not any stored row. `jobs.id` is generated client-side (`crypto.randomUUID()`) at
+  every insertion call site specifically so the shard key can be computed *before* the row exists,
+  rather than needing a round-trip after insert. Verified against a real DB
+  (`sharding.test.ts`): four jobs seeded across shards 0-3, a worker pinned to shard 0 claims
+  exactly the `shard_key=0` job and nothing else, and the default (`shardCount=1`,
+  `WORKER_SHARD_INDEX=0`) reproduces unsharded behavior exactly regardless of a job's `shard_key`.
+
+- **Event-driven execution needed its own, separate connection string — this was not obvious
+  going in.** The first instinct was to `LISTEN` on the same `DATABASE_URL` connection everything
+  else already uses. That connection is Neon's pooled (`-pooler`) host, routed through PgBouncer in
+  transaction-pooling mode — which does not reliably support `LISTEN`/`NOTIFY` at all, since a
+  notification requires a persistent session-level connection and PgBouncer in that mode hands
+  queries to whichever backend connection happens to be free, not the same one call to call.
+  Fix: a distinct, optional `LISTEN_DATABASE_URL` env var pointed at Neon's *direct* (non-pooled)
+  connection string, used only by `worker-service/src/listen.ts`'s dedicated single-connection
+  `postgres()` client — every other query in the whole project keeps using the pooled connection.
+  Left unset by default, which disables the optimization entirely and falls back to pure polling —
+  deliberately, since this is framed everywhere in the code and docs as a latency speedup, never a
+  correctness requirement, so a deployment that never configures it loses nothing but pickup speed.
+  The poll loop races a notification against its normal timeout (`waitForWakeOrTimeout`) rather than
+  replacing the timeout outright, so a dropped/missed notification never leaves a job waiting longer
+  than one ordinary poll interval. Verified live locally (where Postgres has no pooling proxy at
+  all, so `LISTEN_DATABASE_URL` could point at the exact same local database): worker log confirmed
+  `listening on Postgres channel "job_available"` on startup, and an immediate job created via the
+  API showed up `completed` within about a second.
+
+- **WebSocket updates still poll the database — the socket only removes the frontend's HTTP round
+  trip.** `worker-service` is a separate, often-ephemeral process (GitHub Actions runs that start,
+  work, and exit every few minutes — not a thread living inside `backend-api`), so there is no
+  in-process event `backend-api` could subscribe to for "a job just changed state." `backend-api`'s
+  `/ws` endpoint therefore runs the exact same two reads `GET /workers` and `GET /metrics` already
+  do, on a `WS_PUSH_INTERVAL_MS` interval, and pushes the result to every connected client scoped to
+  their `:projectId`. This is real-time from the *frontend's* perspective (no more waiting up to 5s
+  for the next poll tick, no repeated HTTP handshake/header overhead) without needing to invent a
+  cross-process event bus that this project's architecture doesn't otherwise call for. Auth is a
+  `token` query param rather than a header, since the browser's `WebSocket` constructor has no way
+  to set custom headers on the handshake request. `frontend-dashboard`'s `useLiveOverview` hook is
+  additive, not a replacement: `App.tsx` keeps its pre-existing `usePolling` calls running
+  underneath and only prefers the live snapshot while the socket reports `connected`, so an
+  environment that never reaches `/ws` (a proxy that strips upgrade headers, `VITE_WS_BASE_URL`
+  misconfigured, the socket mid-reconnect) silently and correctly falls back to the polling data
+  that was already there. Verified live: a small Node script opened a real WebSocket against the
+  local server with a valid token+projectId and received two `snapshot` frames roughly
+  `WS_PUSH_INTERVAL_MS` apart.
+
+- **AI failure summaries: computed outside the transaction, and heuristic-first by design, not as
+  a fallback bolted on afterward.** First draft called `summarizeFailure()` from *inside*
+  `execute.ts`'s `db.transaction(...)` block that also does the dead-letter insert — caught before
+  it shipped: a transaction must never sit open across a network call (the real Claude API path
+  can take real wall-clock time), since that holds a scarce pooled connection idle for however long
+  that call takes. Fixed by computing the summary before opening the transaction and passing the
+  already-resolved string in. Separately, `ANTHROPIC_API_KEY` is optional and the heuristic path is
+  not a degraded fallback — this project has stayed zero-cost everywhere else (GitHub Actions
+  instead of a paid Render worker, in-memory rate limiting instead of Redis), so a DLQ summary
+  requiring a paid API key by default would have been the one inconsistent piece. The heuristic
+  (`worker-service/src/failureSummary.ts`) pattern-matches ~10 common failure signatures (timeout,
+  connection refused, rate limited, unauthorized/forbidden, validation error, null reference, OOM,
+  deadlock) into a specific explanation + mitigation pair, falling back to a generic-but-informative
+  message otherwise. Verified live: a job forced to fail via `payload.simulateFailure` dead-lettered
+  with a real, correctly-classified heuristic summary in `dead_letter_queue.ai_summary` (confirmed
+  via `psql`), with no `ANTHROPIC_API_KEY` set anywhere in the local environment.
+
 ## Design trace: queue pausing × cron evaluation at the DB level
 
 These two features never touch each other directly, but they interact through the one query both
