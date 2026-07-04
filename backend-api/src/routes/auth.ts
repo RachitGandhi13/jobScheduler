@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { and, asc, eq } from "drizzle-orm";
+import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { organizationMembers, organizations, projects, queues, retryPolicies, users } from "@scheduler/db";
@@ -15,6 +16,15 @@ export const authRouter = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret";
 const TOKEN_TTL = "7d";
+
+// Optional: Sign in with Google is entirely absent (POST /auth/google
+// returns 503) if this isn't configured, rather than backend-api failing to
+// boot -- same "gracefully degrades when unconfigured" pattern as
+// ANTHROPIC_API_KEY elsewhere in this project. No client secret needed: the
+// frontend gets an ID token directly from Google Identity Services, and this
+// only ever verifies that token's signature against Google's public certs.
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
 
 function slugify(name: string): string {
   const base = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -127,7 +137,10 @@ authRouter.post(
     const { email, password } = req.body as z.infer<typeof loginBodySchema>;
 
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    // A Google-only account has no passwordHash to compare against --
+    // treated identically to a wrong password rather than a distinct error,
+    // so this never confirms to a caller which accounts exist or how they signed up.
+    if (!user || !user.passwordHash || !(await bcrypt.compare(password, user.passwordHash))) {
       throw ApiError.unauthorized("invalid_credentials", "Email or password is incorrect");
     }
 
@@ -156,6 +169,132 @@ authRouter.post(
       .limit(1);
 
     const token = issueToken(user.id, membership.organizationId);
+
+    res.json({
+      data: {
+        token,
+        user: { id: user.id, email: user.email, name: user.name },
+        organization: { id: organization.id, name: organization.name },
+        project: project ? { id: project.id, name: project.name } : null,
+        role: membership.role,
+      },
+    });
+  }),
+);
+
+const googleAuthBodySchema = z.object({
+  // The ID token Google Identity Services hands the frontend on a successful
+  // "Sign in with Google" -- a JWT signed by Google, not a session of ours.
+  credential: z.string().min(1),
+});
+
+/**
+ * POST /api/auth/google
+ *
+ * One endpoint handles both cases a "Sign in with Google" button needs to:
+ * an existing user (by email) just logs in, a new email gets the exact same
+ * auto-provisioned workspace POST /auth/signup creates (User + Organization +
+ * Default Project + Queue + Retry Policy, one transaction). Google's own
+ * email verification is trusted in place of a password -- rejected outright
+ * if the token's `email_verified` claim is false. `503 google_auth_not_configured`
+ * if GOOGLE_CLIENT_ID isn't set on this deployment.
+ */
+authRouter.post(
+  "/auth/google",
+  validate({ body: googleAuthBodySchema }),
+  asyncHandler(async (req, res) => {
+    if (!googleClient || !GOOGLE_CLIENT_ID) {
+      throw new ApiError(503, "google_auth_not_configured", "Sign in with Google is not configured on this server");
+    }
+
+    const { credential } = req.body as z.infer<typeof googleAuthBodySchema>;
+
+    let payload;
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID });
+      payload = ticket.getPayload();
+    } catch {
+      throw ApiError.unauthorized("invalid_google_token", "Google sign-in token could not be verified");
+    }
+
+    if (!payload?.email || !payload.email_verified) {
+      throw ApiError.unauthorized("google_email_not_verified", "Google account's email is not verified");
+    }
+
+    const email = payload.email;
+    const name = payload.name ?? null;
+    const googleId = payload.sub;
+
+    const [existingUser] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+
+    let userId: string;
+    if (existingUser) {
+      userId = existingUser.id;
+      // First time this email signs in via Google after previously using a
+      // password -- link the account rather than erroring, since Google has
+      // already verified this is the same email.
+      if (!existingUser.googleId) {
+        await db.update(users).set({ googleId, updatedAt: new Date() }).where(eq(users.id, userId));
+      }
+    } else {
+      const orgName = name ? `${name}'s Workspace` : "My Workspace";
+      const created = await db.transaction(async (tx) => {
+        const [user] = await tx.insert(users).values({ email, googleId, name }).returning();
+
+        const [organization] = await tx
+          .insert(organizations)
+          .values({ name: orgName, slug: slugify(orgName) })
+          .returning();
+
+        await tx.insert(organizationMembers).values({ organizationId: organization.id, userId: user.id, role: "owner" });
+
+        const [project] = await tx
+          .insert(projects)
+          .values({
+            organizationId: organization.id,
+            name: "Default Project",
+            ownerId: user.id,
+            apiKey: crypto.randomBytes(24).toString("hex"),
+          })
+          .returning();
+
+        const [queue] = await tx
+          .insert(queues)
+          .values({ projectId: project.id, name: "default", priority: 0, concurrencyLimit: 2 })
+          .returning();
+
+        await tx.insert(retryPolicies).values({ queueId: queue.id, strategy: "exponential", maxRetries: 3, baseDelayMs: 1000 });
+
+        return user;
+      });
+      userId = created.id;
+    }
+
+    const [membership] = await db
+      .select({ organizationId: organizationMembers.organizationId, role: organizationMembers.role })
+      .from(organizationMembers)
+      .where(eq(organizationMembers.userId, userId))
+      .orderBy(asc(organizationMembers.createdAt))
+      .limit(1);
+
+    if (!membership) {
+      throw ApiError.forbidden("no_organization", "This user does not belong to any organization");
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    const [organization] = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, membership.organizationId))
+      .limit(1);
+    const [project] = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.organizationId, membership.organizationId))
+      .orderBy(asc(projects.createdAt))
+      .limit(1);
+
+    const token = issueToken(userId, membership.organizationId);
 
     res.json({
       data: {

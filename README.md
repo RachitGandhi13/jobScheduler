@@ -144,7 +144,8 @@ erDiagram
     USERS {
         uuid id PK
         varchar email UK
-        varchar password_hash
+        varchar password_hash "nullable -- absent for Google-only accounts"
+        varchar google_id UK "nullable -- set on first Google sign-in"
         varchar name
     }
     ORGANIZATION_MEMBERS {
@@ -291,6 +292,14 @@ Requests must carry `Authorization: Bearer <jwt>`, where the JWT payload is
 - `GET /api/auth/me` — requires a valid `Bearer` token; returns `{ user, organization, project,
   role }` for session rehydration (`frontend-dashboard` calls this once on load to validate a
   stored token before trusting it).
+- `POST /api/auth/google` — `{ credential }`, the ID token Google Identity Services hands the
+  frontend after a successful "Sign in with Google". One endpoint covers both an existing account
+  (by email — just logs in) and a brand-new email (auto-provisions the same
+  User/Organization/Default Project/Queue that `POST /auth/signup` does). Returns the same
+  `{ token, user, organization, project, role }` shape. Google's own `email_verified` claim is
+  trusted in place of a password. Optional feature — `503 google_auth_not_configured` if
+  `GOOGLE_CLIENT_ID` isn't set on the backend; the frontend simply doesn't render the button in
+  that case (see "Setting up Google sign-in" below).
 
 `role` is one of `owner` / `admin` / `member`, from `organization_members.role` — see "Role-based
 access control" below for what each can do.
@@ -301,6 +310,26 @@ For local scripting/testing without going through signup, `backend-api/.env` als
 `MOCK_AUTH=true`, which accepts `x-mock-user-id` / `x-mock-organization-id` headers instead of a
 JWT for any *existing* organization id. **Never set this in a deployed environment** — it lets
 anyone who knows an organization's id act as that org.
+
+### Setting up Google sign-in
+
+Optional — the app works fully without this; the "or" divider and Google button on the login
+screen simply don't render until it's configured. Two env vars, same value, one Google Cloud setup:
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials →
+   **Create Credentials → OAuth client ID** → Application type: **Web application**.
+2. Under **Authorized JavaScript origins**, add every origin the dashboard is served from:
+   `http://localhost:5173` for local dev, plus your Vercel URL (e.g.
+   `https://your-app.vercel.app`) for production. No redirect URI is needed — Google Identity
+   Services' one-tap/button flow returns the ID token directly to the page, no server-side
+   redirect round trip.
+3. Copy the generated **Client ID** (looks like `123...-abc....apps.googleusercontent.com`; there
+   is no client secret to worry about — the backend never talks to Google directly, it only
+   verifies the ID token's signature against Google's public keys).
+4. Set it as `VITE_GOOGLE_CLIENT_ID` on `frontend-dashboard` (Vercel + local `.env`) **and**
+   `GOOGLE_CLIENT_ID` on `backend-api` (Render + local `.env`) — same value, two different env var
+   names because one is a Vite build-time variable and the other is a server runtime variable.
+5. Redeploy both. The button appears on next load.
 
 ## Role-based access control
 
@@ -824,6 +853,7 @@ deletes them in `afterEach` — safe to run repeatedly with no manual cleanup.
 | `backend-api` | Render | `WORKER_HEARTBEAT_TIMEOUT_MS` | no | default `15000` |
 | `backend-api` | Render | `ZOMBIE_CLEANUP_INTERVAL_MS` | no | default `10000` |
 | `backend-api` | Render | `WS_PUSH_INTERVAL_MS` | no | default `3000` — see "Bonus features: WebSocket live updates" |
+| `backend-api` | Render | `GOOGLE_CLIENT_ID` | no | enables `POST /auth/google` — see "Setting up Google sign-in" |
 | `worker-service` | GitHub Actions | `DATABASE_URL` | yes | repo secret: Settings → Secrets and variables → Actions |
 | `worker-service` | (n/a, defaults used) | `POLL_INTERVAL_MS` | no | default `1000` — continuous mode only (`index.ts`), not `runOnce.ts` |
 | `worker-service` | (n/a, defaults used) | `HEARTBEAT_INTERVAL_MS` | no | default `5000` — only settable if self-hosting (Render/locally), GitHub Actions workflow doesn't pass it |
@@ -834,6 +864,7 @@ deletes them in `afterEach` — safe to run repeatedly with no manual cleanup.
 | `worker-service` | (n/a, opt-in) | `ANTHROPIC_API_KEY` | no | enables a real AI-generated DLQ failure summary instead of the zero-cost heuristic; see "Bonus features: AI-generated failure summaries" |
 | `frontend-dashboard` | Vercel | `VITE_API_BASE_URL` | yes | Render `backend-api` URL + `/api` |
 | `frontend-dashboard` | Vercel | `VITE_WS_BASE_URL` | no | derived from `VITE_API_BASE_URL` (http→ws, strips `/api`) if unset |
+| `frontend-dashboard` | Vercel | `VITE_GOOGLE_CLIENT_ID` | no | same value as `backend-api`'s `GOOGLE_CLIENT_ID` — see "Setting up Google sign-in" |
 
 Each service's `.env.example` carries the same guidance inline.
 

@@ -388,6 +388,33 @@ this failure mode) — the price of putting the queue in the same database as ev
   with a real, correctly-classified heuristic summary in `dead_letter_queue.ai_summary` (confirmed
   via `psql`), with no `ANTHROPIC_API_KEY` set anywhere in the local environment.
 
+- **"Sign in with Google" verifies an ID token client-side; it never becomes an OAuth client
+  itself.** Two shapes of "Google login" exist: the full Authorization Code flow (server redirects
+  to Google, exchanges a code for tokens, needs a client secret and a registered redirect URI), and
+  Google Identity Services' one-tap/button flow (the frontend gets a signed ID token directly from
+  Google's JS SDK, and the backend's only job is verifying that token's signature). Went with the
+  second — no client secret to protect, no redirect URI to register per environment, and
+  `google-auth-library`'s `OAuth2Client.verifyIdToken()` is a few lines against Google's published
+  public keys. `POST /auth/google` deliberately handles both "this email already has an account"
+  (log in, and link `google_id` if this is the first Google sign-in for it) and "brand new email"
+  (auto-provision the identical User/Organization/Default Project/Queue/Retry-Policy transaction
+  `POST /auth/signup` already does) behind one endpoint, since a real "Sign in with Google" button
+  can't ask the user up front which case they're in. Google's own `email_verified` claim is trusted
+  in place of a password — rejected outright if false, rather than silently treating it as true.
+  `users.password_hash` had to become nullable (a Google-only account never sets one); the login
+  handler's `bcrypt.compare` call was updated to short-circuit on a null hash first, since passing
+  `null` to `bcrypt.compare` throws rather than just failing the comparison. Optional and
+  gracefully degraded like `ANTHROPIC_API_KEY`: `GOOGLE_CLIENT_ID` unset means `POST /auth/google`
+  returns `503` and the frontend's "or continue with Google" divider + button simply don't render
+  at all (checked once, at module scope, not re-evaluated per-request). Verified live: `503` with
+  no `GOOGLE_CLIENT_ID` set, `401 invalid_google_token` for a garbage credential once a (fake) client
+  ID was configured, `400` for a missing `credential` field, and confirmed the existing
+  password-based signup/login flows are entirely unaffected by the schema change (fresh signup,
+  then login with the same password, both against the post-migration schema). The one thing that
+  cannot be verified without a browser and a real Google account is the actual happy path — an ID
+  token is a JWT signed by Google's private key, which cannot be fabricated in a test environment;
+  this is inherent to the design, not a gap in verification effort.
+
 ## Design trace: queue pausing × cron evaluation at the DB level
 
 These two features never touch each other directly, but they interact through the one query both

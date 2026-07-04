@@ -1,12 +1,18 @@
 import { useState, type FormEvent } from "react";
+import { GoogleLogin } from "@react-oauth/google";
 import { GlassCard } from "./GlassCard";
 
 interface AuthScreenProps {
   onLogin: (email: string, password: string) => Promise<void>;
   onSignup: (email: string, password: string, organizationName: string, name?: string) => Promise<void>;
+  onGoogleLogin: (credential: string) => Promise<void>;
 }
 
-export function AuthScreen({ onLogin, onSignup }: AuthScreenProps) {
+// Mirrors main.tsx's check -- the whole Google block (provider + button)
+// only exists when a client id is actually configured.
+const GOOGLE_ENABLED = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
+
+export function AuthScreen({ onLogin, onSignup, onGoogleLogin }: AuthScreenProps) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,6 +31,22 @@ export function AuthScreen({ onLogin, onSignup }: AuthScreenProps) {
       } else {
         await onSignup(email, password, organizationName, name || undefined);
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleGoogleSuccess(credential: string | undefined) {
+    if (!credential) {
+      setError("Google did not return a credential — please try again.");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await onGoogleLogin(credential);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -94,6 +116,23 @@ export function AuthScreen({ onLogin, onSignup }: AuthScreenProps) {
             {busy ? "Working…" : mode === "login" ? "Log in" : "Create workspace"}
           </button>
         </form>
+
+        {GOOGLE_ENABLED && (
+          <>
+            <div className="my-4 flex items-center gap-3">
+              <div className="h-px flex-1 bg-olive/15" />
+              <span className="text-xs text-olive-dark/50">or</span>
+              <div className="h-px flex-1 bg-olive/15" />
+            </div>
+            <div className="flex justify-center">
+              <GoogleLogin
+                onSuccess={(credentialResponse) => handleGoogleSuccess(credentialResponse.credential)}
+                onError={() => setError("Google sign-in failed — please try again.")}
+                width="304"
+              />
+            </div>
+          </>
+        )}
 
         <button
           onClick={() => setMode(mode === "login" ? "signup" : "login")}
