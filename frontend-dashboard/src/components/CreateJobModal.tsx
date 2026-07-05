@@ -13,6 +13,8 @@ interface CreateJobModalProps {
 
 type ScheduleMode = CreateJobSchedule["mode"];
 
+const FIELD_LABEL = "mb-1.5 block text-[13px] font-medium text-olive-dark";
+
 export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalProps) {
   const [type, setType] = useState("");
   const [queueId, setQueueId] = useState(queues[0]?.id ?? "");
@@ -76,33 +78,34 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
   }
 
   return (
-    <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-olive-dark/20 p-4 backdrop-blur-sm">
-      <GlassCard className="animate-scale-in max-h-[90vh] w-full max-w-lg overflow-y-auto p-6">
-        <div className="mb-4 flex items-center justify-between">
+    <div className="animate-fade-in fixed inset-0 z-50 flex items-center justify-center bg-espresso/25 p-4 backdrop-blur-sm">
+      <GlassCard className="animate-scale-in max-h-[90vh] w-full max-w-lg overflow-y-auto p-6 sm:p-7">
+        <div className="mb-1 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-olive-dark">Create job</h2>
-          <button onClick={onClose} className="text-olive-dark/60 hover:text-olive-dark" aria-label="Close">
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1 text-olive-dark/50 transition hover:bg-olive-dark/[0.06] hover:text-olive-dark"
+            aria-label="Close"
+          >
             <CloseIcon className="h-5 w-5" />
           </button>
         </div>
+        <p className="mb-5 text-[13px] text-olive-dark/55">Enqueue work onto one of this project's queues.</p>
 
-        <div className="space-y-3 text-sm">
+        <div className="space-y-4 text-sm">
           <label className="block">
-            <span className="mb-1 block font-medium text-olive-dark">Type</span>
+            <span className={FIELD_LABEL}>Type</span>
             <input
               value={type}
               onChange={(e) => setType(e.target.value)}
               placeholder="send-welcome-email"
-              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
+              className="input"
             />
           </label>
 
           <label className="block">
-            <span className="mb-1 block font-medium text-olive-dark">Queue</span>
-            <select
-              value={queueId}
-              onChange={(e) => setQueueId(e.target.value)}
-              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
-            >
+            <span className={FIELD_LABEL}>Queue</span>
+            <select value={queueId} onChange={(e) => setQueueId(e.target.value)} className="input">
               {queues.length === 0 && <option value="">No queues in this project</option>}
               {queues.map((q) => (
                 <option key={q.id} value={q.id}>
@@ -114,44 +117,41 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
 
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="mb-1 block font-medium text-olive-dark">Priority</span>
+              <span className={FIELD_LABEL}>Priority</span>
               <input
                 type="number"
                 value={priority}
                 onChange={(e) => setPriority(Number(e.target.value))}
-                className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
+                className="input"
               />
             </label>
             <label className="block">
-              <span className="mb-1 block font-medium text-olive-dark">Max attempts</span>
+              <span className={FIELD_LABEL}>Max attempts</span>
               <input
                 type="number"
                 min={1}
                 value={maxAttempts}
                 onChange={(e) => setMaxAttempts(e.target.value)}
                 placeholder="queue default"
-                className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
+                className="input"
               />
             </label>
           </div>
 
           <label className="block">
-            <span className="mb-1 block font-medium text-olive-dark">Payload (JSON)</span>
+            <span className={FIELD_LABEL}>Payload (JSON)</span>
             <textarea
               value={payload}
               onChange={(e) => setPayload(e.target.value)}
               rows={3}
-              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 font-mono text-xs outline-none focus:border-olive"
+              spellCheck={false}
+              className="input font-mono text-xs leading-relaxed"
             />
           </label>
 
           <label className="block">
-            <span className="mb-1 block font-medium text-olive-dark">Schedule</span>
-            <select
-              value={mode}
-              onChange={(e) => setMode(e.target.value as ScheduleMode)}
-              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
-            >
+            <span className={FIELD_LABEL}>Schedule</span>
+            <select value={mode} onChange={(e) => setMode(e.target.value as ScheduleMode)} className="input">
               <option value="immediate">Immediate — run now</option>
               <option value="delayed">Delayed — run after a delay</option>
               <option value="scheduled">Scheduled — run at a specific time</option>
@@ -160,67 +160,77 @@ export function CreateJobModal({ queues, onClose, onCreated }: CreateJobModalPro
           </label>
 
           {mode === "delayed" && (
-            <label className="block">
-              <span className="mb-1 block font-medium text-olive-dark">Delay (ms)</span>
+            <label className="animate-fade-in block">
+              <span className={FIELD_LABEL}>Delay (ms)</span>
               <input
                 type="number"
                 min={1}
                 value={delayMs}
                 onChange={(e) => setDelayMs(Number(e.target.value))}
-                className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
+                className="input"
               />
             </label>
           )}
           {mode === "scheduled" && (
-            <label className="block">
-              <span className="mb-1 block font-medium text-olive-dark">Run at</span>
-              <input
-                type="datetime-local"
-                value={runAt}
-                onChange={(e) => setRunAt(e.target.value)}
-                className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
-              />
+            <label className="animate-fade-in block">
+              <span className={FIELD_LABEL}>Run at</span>
+              <input type="datetime-local" value={runAt} onChange={(e) => setRunAt(e.target.value)} className="input" />
             </label>
           )}
           {mode === "recurring" && (
-            <label className="block">
-              <span className="mb-1 block font-medium text-olive-dark">Cron expression</span>
+            <label className="animate-fade-in block">
+              <span className={FIELD_LABEL}>Cron expression</span>
               <input
                 value={cronExpression}
                 onChange={(e) => setCronExpression(e.target.value)}
                 placeholder="*/15 * * * *"
-                className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 font-mono outline-none focus:border-olive"
+                className="input font-mono"
               />
             </label>
           )}
 
-          <label className="block">
-            <span className="mb-1 block font-medium text-olive-dark">Idempotency key (optional)</span>
-            <input
-              value={idempotencyKey}
-              onChange={(e) => setIdempotencyKey(e.target.value)}
-              placeholder="order-123"
-              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 outline-none focus:border-olive"
-            />
-          </label>
+          <div className="grid grid-cols-1 gap-4 border-t border-olive-dark/[0.06] pt-4">
+            <label className="block">
+              <span className={FIELD_LABEL}>Idempotency key (optional)</span>
+              <input
+                value={idempotencyKey}
+                onChange={(e) => setIdempotencyKey(e.target.value)}
+                placeholder="order-123"
+                className="input"
+              />
+            </label>
 
-          <label className="block">
-            <span className="mb-1 block font-medium text-olive-dark">Waits on job (optional)</span>
-            <input
-              value={parentJobId}
-              onChange={(e) => setParentJobId(e.target.value)}
-              placeholder="Parent job id — this job won't claim until that one completes"
-              className="w-full rounded-lg border border-olive/20 bg-white/80 px-3 py-2 font-mono text-xs outline-none focus:border-olive"
-            />
-          </label>
+            <label className="block">
+              <span className={FIELD_LABEL}>Waits on job (optional)</span>
+              <input
+                value={parentJobId}
+                onChange={(e) => setParentJobId(e.target.value)}
+                placeholder="Parent job id — this job won't claim until that one completes"
+                className="input font-mono text-xs"
+              />
+            </label>
+          </div>
 
-          {error && <p className="text-sm text-terracotta">{error}</p>}
+          {error && (
+            <div
+              role="alert"
+              className="animate-fade-in rounded-xl border border-terracotta/25 bg-terracotta-light/40 px-3.5 py-2.5 text-[13px] leading-snug text-olive-dark"
+            >
+              {error}
+            </div>
+          )}
 
           <button
             onClick={handleSubmit}
             disabled={submitting || queues.length === 0}
-            className="btn-press w-full rounded-lg bg-olive px-4 py-2 font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+            className="btn btn-primary btn-press w-full py-2.5 text-sm"
           >
+            {submitting && (
+              <span
+                aria-hidden="true"
+                className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white motion-reduce:animate-none"
+              />
+            )}
             {submitting ? "Creating…" : "Create job"}
           </button>
         </div>

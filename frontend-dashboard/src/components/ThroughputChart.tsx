@@ -39,7 +39,17 @@ export function ThroughputChart({ metrics }: ThroughputChartProps) {
       <p className="mb-4 text-xs text-olive-dark/60">Job run states across all queues in this project</p>
 
       {total === 0 ? (
-        <div className="flex h-64 items-center justify-center text-sm text-olive-dark/50">No jobs yet</div>
+        <div className="flex h-64 flex-col items-center justify-center gap-3 text-center">
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-olive/[0.08]">
+            <span aria-hidden="true" className="h-5 w-5 rounded-full border-[3px] border-olive/30 border-t-sage" />
+          </span>
+          <div>
+            <p className="text-sm font-medium text-olive-dark/70">No jobs yet</p>
+            <p className="mx-auto mt-1 max-w-[230px] text-xs leading-relaxed text-olive-dark/45">
+              Throughput appears here the moment your first job runs.
+            </p>
+          </div>
+        </div>
       ) : (
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
@@ -52,7 +62,7 @@ export function ThroughputChart({ metrics }: ThroughputChartProps) {
                 outerRadius="85%"
                 paddingAngle={2}
                 strokeWidth={2}
-                stroke="#f4f4f3"
+                stroke="#f6f1e7"
                 label={({ name, value }) => (value ? `${name}: ${value}` : "")}
                 labelLine={false}
               >

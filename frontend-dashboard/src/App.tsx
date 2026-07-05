@@ -48,17 +48,21 @@ function NoProjectCard({ onCreated }: { onCreated: (project: { id: string; name:
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Project name"
-          className="min-w-0 flex-1 rounded-lg border border-olive-dark/20 bg-white/80 px-3 py-2 text-sm"
+          className="input min-w-0 flex-1"
         />
         <button
           onClick={handleCreate}
           disabled={creating || !name.trim()}
-          className="btn-press shrink-0 rounded-lg bg-olive px-4 py-2 text-sm font-medium text-white transition hover:bg-olive-dark disabled:opacity-50"
+          className="btn btn-primary btn-press shrink-0 px-4 py-2 text-sm"
         >
           {creating ? "Creating…" : "Create project"}
         </button>
       </div>
-      {error && <p className="mt-2 text-xs text-terracotta">{error}</p>}
+      {error && (
+        <p className="animate-fade-in mt-2.5 rounded-lg border border-terracotta/25 bg-terracotta-light/40 px-2.5 py-1.5 text-xs text-olive-dark">
+          {error}
+        </p>
+      )}
     </GlassCard>
   );
 }
@@ -104,7 +108,7 @@ function App() {
       onSwitchProject={switchProject}
     >
       {hasProject && pollingError && (
-        <p className="mb-4 rounded-lg bg-terracotta-light/60 px-4 py-2 text-sm text-olive-dark">
+        <p className="animate-fade-in mb-4 rounded-xl border border-terracotta/25 bg-terracotta-light/40 px-4 py-2.5 text-sm text-olive-dark">
           Couldn't refresh: {pollingError.message}. Showing the last data loaded successfully.
         </p>
       )}

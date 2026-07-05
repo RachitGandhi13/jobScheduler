@@ -3,6 +3,8 @@ import { api } from "../api/client";
 import type { AuthSession } from "../auth";
 import type { Queue, QueueStats, RetryStrategy } from "../types";
 import { GlassCard } from "./GlassCard";
+import { PlusIcon } from "./icons";
+import { Skeleton } from "./Skeleton";
 
 interface QueueMatrixProps {
   queues: Queue[] | null;
@@ -50,6 +52,8 @@ function formFromQueue(queue: Queue): QueueFormValues {
   };
 }
 
+const FIELD_LABEL = "mb-1 block text-[11px] font-medium text-olive-dark/55";
+
 function QueueForm({
   values,
   onChange,
@@ -58,40 +62,41 @@ function QueueForm({
   onChange: (values: QueueFormValues) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2 text-xs">
+    <div className="grid grid-cols-2 gap-2.5">
       <label className="col-span-2">
-        <span className="mb-1 block text-olive-dark/60">Name</span>
+        <span className={FIELD_LABEL}>Name</span>
         <input
           value={values.name}
           onChange={(e) => onChange({ ...values, name: e.target.value })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          placeholder="emails"
+          className="input input-sm"
         />
       </label>
       <label>
-        <span className="mb-1 block text-olive-dark/60">Priority</span>
+        <span className={FIELD_LABEL}>Priority</span>
         <input
           type="number"
           value={values.priority}
           onChange={(e) => onChange({ ...values, priority: Number(e.target.value) })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         />
       </label>
       <label>
-        <span className="mb-1 block text-olive-dark/60">Concurrency</span>
+        <span className={FIELD_LABEL}>Concurrency</span>
         <input
           type="number"
           min={1}
           value={values.concurrencyLimit}
           onChange={(e) => onChange({ ...values, concurrencyLimit: Number(e.target.value) })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         />
       </label>
       <label>
-        <span className="mb-1 block text-olive-dark/60">Retry strategy</span>
+        <span className={FIELD_LABEL}>Retry strategy</span>
         <select
           value={values.strategy}
           onChange={(e) => onChange({ ...values, strategy: e.target.value as RetryStrategy })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         >
           <option value="fixed">fixed</option>
           <option value="linear">linear</option>
@@ -99,27 +104,30 @@ function QueueForm({
         </select>
       </label>
       <label>
-        <span className="mb-1 block text-olive-dark/60">Max retries</span>
+        <span className={FIELD_LABEL}>Max retries</span>
         <input
           type="number"
           min={0}
           value={values.maxRetries}
           onChange={(e) => onChange({ ...values, maxRetries: Number(e.target.value) })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         />
       </label>
       <label>
-        <span className="mb-1 block text-olive-dark/60">Retry base delay (ms)</span>
+        <span className={FIELD_LABEL}>Retry base delay (ms)</span>
         <input
           type="number"
           min={0}
           value={values.baseDelayMs}
           onChange={(e) => onChange({ ...values, baseDelayMs: Number(e.target.value) })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         />
       </label>
       <label>
-        <span className="mb-1 block text-olive-dark/60" title="Splits this queue's jobs across N virtual shards so multiple worker groups can claim in parallel without contending on the same rows">
+        <span
+          className={FIELD_LABEL}
+          title="Splits this queue's jobs across N virtual shards so multiple worker groups can claim in parallel without contending on the same rows"
+        >
           Shard count
         </span>
         <input
@@ -128,18 +136,18 @@ function QueueForm({
           max={64}
           value={values.shardCount}
           onChange={(e) => onChange({ ...values, shardCount: Number(e.target.value) })}
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         />
       </label>
       <label className="col-span-2">
-        <span className="mb-1 block text-olive-dark/60">Rate limit (requests/min, blank = org default)</span>
+        <span className={FIELD_LABEL}>Rate limit (requests/min, blank = org default)</span>
         <input
           type="number"
           min={1}
           value={values.rateLimitPerMinute}
           onChange={(e) => onChange({ ...values, rateLimitPerMinute: e.target.value })}
           placeholder="org default"
-          className="w-full rounded border border-olive-dark/20 bg-white/80 px-2 py-1"
+          className="input input-sm"
         />
       </label>
     </div>
@@ -212,20 +220,17 @@ function QueueCard({
   if (editing) {
     return (
       <GlassCard className="p-5">
-        <h4 className="mb-3 font-semibold text-olive-dark">Edit "{queue.name}"</h4>
+        <h4 className="mb-3.5 font-semibold text-olive-dark">Edit "{queue.name}"</h4>
         <QueueForm values={form} onChange={setForm} />
-        <div className="mt-3 flex gap-2">
+        <div className="mt-4 flex gap-2">
           <button
             onClick={saveEdit}
             disabled={pending}
-            className="btn-press flex-1 rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white hover:bg-olive-dark disabled:opacity-50"
+            className="btn btn-primary btn-press flex-1 px-3 py-2 text-sm"
           >
             {pending ? "Saving…" : "Save"}
           </button>
-          <button
-            onClick={() => setEditing(false)}
-            className="flex-1 rounded-lg bg-white/60 px-3 py-1.5 text-sm font-medium text-olive-dark hover:bg-white/80"
-          >
+          <button onClick={() => setEditing(false)} className="btn btn-ghost flex-1 px-3 py-2 text-sm">
             Cancel
           </button>
         </div>
@@ -234,67 +239,65 @@ function QueueCard({
   }
 
   return (
-    <GlassCard className="p-5">
-      <div className="mb-3 flex items-start justify-between">
-        <div>
-          <h4 className="font-semibold text-olive-dark">{queue.name}</h4>
-          <p className="text-xs text-olive-dark/50">priority {queue.priority}</p>
+    <GlassCard className="flex flex-col p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h4 className="truncate font-semibold text-olive-dark">{queue.name}</h4>
+          <p className="mt-0.5 text-xs text-olive-dark/50">priority {queue.priority}</p>
         </div>
         <span
-          className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-            queue.isPaused ? "bg-terracotta-light text-olive-dark" : "bg-sage/50 text-olive-dark"
+          className={`flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+            queue.isPaused ? "bg-terracotta-light/70 text-olive-dark" : "bg-sage/25 text-olive-dark"
           }`}
         >
+          <span className={`h-1.5 w-1.5 rounded-full ${queue.isPaused ? "bg-terracotta" : "animate-pulse bg-olive"}`} />
           {queue.isPaused ? "Paused" : "Active"}
         </span>
       </div>
 
-      <dl className="mb-4 grid grid-cols-2 gap-y-2 text-sm">
-        <dt className="text-olive-dark/60">Concurrency</dt>
-        <dd className="text-right font-medium text-olive-dark">{queue.concurrencyLimit}</dd>
-        <dt className="text-olive-dark/60">Retry strategy</dt>
-        <dd className="text-right font-medium capitalize text-olive-dark">{queue.retryPolicy?.strategy ?? "—"}</dd>
-        <dt className="text-olive-dark/60">Max retries</dt>
-        <dd className="text-right font-medium text-olive-dark">{queue.retryPolicy?.maxRetries ?? "—"}</dd>
-        <dt className="text-olive-dark/60">Retry base delay</dt>
-        <dd className="text-right font-medium text-olive-dark">
-          {queue.retryPolicy ? `${queue.retryPolicy.baseDelayMs}ms` : "—"}
-        </dd>
-        {queue.shardCount > 1 && (
-          <>
-            <dt className="text-olive-dark/60">Shards</dt>
-            <dd className="text-right font-medium text-olive-dark">{queue.shardCount}</dd>
-          </>
-        )}
-        {queue.rateLimitPerMinute != null && (
-          <>
-            <dt className="text-olive-dark/60">Rate limit</dt>
-            <dd className="text-right font-medium text-olive-dark">{queue.rateLimitPerMinute}/min</dd>
-          </>
-        )}
+      <dl className="mb-4 flex-1 divide-y divide-olive-dark/[0.05] text-sm">
+        {[
+          ["Concurrency", String(queue.concurrencyLimit)],
+          ["Retry strategy", queue.retryPolicy?.strategy ?? "—"],
+          ["Max retries", queue.retryPolicy != null ? String(queue.retryPolicy.maxRetries) : "—"],
+          ["Retry base delay", queue.retryPolicy ? `${queue.retryPolicy.baseDelayMs}ms` : "—"],
+          ...(queue.shardCount > 1 ? [["Shards", String(queue.shardCount)] as const] : []),
+          ...(queue.rateLimitPerMinute != null ? [["Rate limit", `${queue.rateLimitPerMinute}/min`] as const] : []),
+        ].map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between py-1.5 first:pt-0 last:pb-0">
+            <dt className="text-olive-dark/55">{label}</dt>
+            <dd className="font-medium text-olive-dark capitalize tabular-nums">{value}</dd>
+          </div>
+        ))}
       </dl>
 
       {statsOpen && (
-        <div className="mb-4 rounded-lg bg-white/50 p-3 text-xs">
+        <div className="animate-fade-in mb-4 rounded-xl border border-olive-dark/[0.06] bg-white/60 p-3 text-xs">
           {statsLoading || !stats ? (
-            <p className="text-olive-dark/50">Loading stats…</p>
+            <div className="space-y-2">
+              <Skeleton className="h-3.5 w-2/3" />
+              <Skeleton className="h-3.5 w-1/2" />
+              <Skeleton className="h-3.5 w-3/5" />
+            </div>
           ) : (
             <>
-              <div className="mb-1.5 grid grid-cols-3 gap-y-1">
+              <div className="mb-1.5 grid grid-cols-3 gap-x-3 gap-y-1">
                 {Object.entries(stats.jobCounts).map(([status, count]) => (
-                  <div key={status} className="flex justify-between pr-2">
-                    <span className="capitalize text-olive-dark/60">{status}</span>
-                    <span className="font-medium text-olive-dark">{count}</span>
+                  <div key={status} className="flex justify-between">
+                    <span className="text-olive-dark/55 capitalize">{status}</span>
+                    <span className="font-medium text-olive-dark tabular-nums">{count}</span>
                   </div>
                 ))}
               </div>
-              <div className="flex justify-between border-t border-olive-dark/10 pt-1.5">
-                <span className="text-olive-dark/60">Dead-lettered</span>
-                <span className="font-medium text-terracotta">{stats.deadLetterCount}</span>
+              <div className="flex justify-between border-t border-olive-dark/[0.07] pt-1.5">
+                <span className="text-olive-dark/55">Dead-lettered</span>
+                <span className={`font-medium tabular-nums ${stats.deadLetterCount > 0 ? "text-terracotta" : "text-olive-dark"}`}>
+                  {stats.deadLetterCount}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-olive-dark/60">Avg. duration</span>
-                <span className="font-medium text-olive-dark">
+                <span className="text-olive-dark/55">Avg. duration</span>
+                <span className="font-medium text-olive-dark tabular-nums">
                   {stats.avgDurationMs != null ? `${stats.avgDurationMs}ms` : "—"}
                 </span>
               </div>
@@ -307,25 +310,17 @@ function QueueCard({
         <button
           onClick={toggle}
           disabled={pending}
-          className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition disabled:opacity-50 ${
-            queue.isPaused
-              ? "bg-olive text-white hover:bg-olive-dark"
-              : "bg-terracotta-light text-olive-dark hover:bg-terracotta"
+          className={`btn btn-press flex-1 px-3 py-2 text-sm ${
+            queue.isPaused ? "btn-primary" : "bg-terracotta-light/70 text-olive-dark hover:bg-terracotta-light"
           }`}
         >
           {pending ? "Working…" : queue.isPaused ? "Resume" : "Pause"}
         </button>
-        <button
-          onClick={toggleStats}
-          className="flex-1 rounded-lg bg-white/60 px-3 py-2 text-sm font-medium text-olive-dark hover:bg-white/80"
-        >
+        <button onClick={toggleStats} className="btn btn-secondary flex-1 px-3 py-2 text-sm">
           {statsOpen ? "Hide stats" : "Stats"}
         </button>
         {canManage && (
-          <button
-            onClick={() => setEditing(true)}
-            className="flex-1 rounded-lg bg-white/60 px-3 py-2 text-sm font-medium text-olive-dark hover:bg-white/80"
-          >
+          <button onClick={() => setEditing(true)} className="btn btn-secondary flex-1 px-3 py-2 text-sm">
             Edit
           </button>
         )}
@@ -367,8 +362,11 @@ function NewQueueCard({ onCreated }: { onCreated: () => void }) {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="flex min-h-[220px] items-center justify-center rounded-2xl border-2 border-dashed border-olive-dark/20 text-sm font-medium text-olive-dark/50 transition hover:border-olive-dark/40 hover:text-olive-dark"
+        className="animate-fade-in-up group flex min-h-[240px] flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-olive-dark/15 text-sm font-medium text-olive-dark/50 transition hover:border-olive/40 hover:bg-white/40 hover:text-olive-dark"
       >
+        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-olive/[0.08] transition group-hover:bg-olive/15">
+          <PlusIcon className="h-4.5 w-4.5 text-olive" />
+        </span>
         + New queue
       </button>
     );
@@ -376,21 +374,22 @@ function NewQueueCard({ onCreated }: { onCreated: () => void }) {
 
   return (
     <GlassCard className="p-5">
-      <h4 className="mb-3 font-semibold text-olive-dark">New queue</h4>
+      <h4 className="mb-3.5 font-semibold text-olive-dark">New queue</h4>
       <QueueForm values={form} onChange={setForm} />
-      {error && <p className="mt-2 text-xs text-terracotta">{error}</p>}
-      <div className="mt-3 flex gap-2">
+      {error && (
+        <p className="animate-fade-in mt-2.5 rounded-lg border border-terracotta/25 bg-terracotta-light/40 px-2.5 py-1.5 text-xs text-olive-dark">
+          {error}
+        </p>
+      )}
+      <div className="mt-4 flex gap-2">
         <button
           onClick={create}
           disabled={pending || !form.name.trim()}
-          className="flex-1 rounded-lg bg-olive px-3 py-1.5 text-sm font-medium text-white hover:bg-olive-dark disabled:opacity-50"
+          className="btn btn-primary btn-press flex-1 px-3 py-2 text-sm"
         >
           {pending ? "Creating…" : "Create"}
         </button>
-        <button
-          onClick={() => setOpen(false)}
-          className="flex-1 rounded-lg bg-white/60 px-3 py-1.5 text-sm font-medium text-olive-dark hover:bg-white/80"
-        >
+        <button onClick={() => setOpen(false)} className="btn btn-ghost flex-1 px-3 py-2 text-sm">
           Cancel
         </button>
       </div>
@@ -402,7 +401,13 @@ export function QueueMatrix({ queues, loading, role, onChanged }: QueueMatrixPro
   const canManage = CAN_MANAGE[role];
 
   if (loading && !queues) {
-    return <GlassCard className="p-6 text-sm text-olive-dark/60">Loading queues…</GlassCard>;
+    return (
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <Skeleton className="h-[248px] rounded-2xl" />
+        <Skeleton className="h-[248px] rounded-2xl" />
+        <Skeleton className="h-[248px] rounded-2xl" />
+      </div>
+    );
   }
 
   return (

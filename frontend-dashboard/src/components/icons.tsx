@@ -73,3 +73,32 @@ export function CloseIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function CheckIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M20 6 9 17l-5-5" />
+    </Icon>
+  );
+}
+
+export function PlusIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </Icon>
+  );
+}
+
+/** Filled two-tone logo mark (matches the favicon): stacked queue bars on a rust tile. */
+export function BrandMark(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 32 32" fill="none" aria-hidden="true" {...props}>
+      <rect width="32" height="32" rx="8" fill="#8a3a1f" />
+      <rect x="8" y="9" width="16" height="3.4" rx="1.7" fill="#f6f1e7" />
+      <rect x="8" y="14.3" width="16" height="3.4" rx="1.7" fill="#f6f1e7" opacity="0.72" />
+      <rect x="8" y="19.6" width="10.5" height="3.4" rx="1.7" fill="#c9a568" />
+    </svg>
+  );
+}

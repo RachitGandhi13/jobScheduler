@@ -6,7 +6,7 @@
  * accent (badges, highlights), deep espresso as the ink/text color, and a
  * genuinely distinct red-orange reserved for alerts/danger so it never gets
  * confused with the rust brand color at a glance. Every existing component
- * already reads colors through these five names -- retheming here cascades
+ * already reads colors through these named tokens -- retheming here cascades
  * everywhere with no component-level changes needed.
  */
 @theme {
@@ -16,6 +16,8 @@
   --color-sage: #c9a568;
   --color-terracotta: #c1502e;
   --color-terracotta-light: #ecd2bf;
+  /* Near-black warm brown for dark surfaces (auth brand panel, toasts). */
+  --color-espresso: #201108;
 
   --font-sans:
     "Helvetica Neue", Helvetica, Arial, "Segoe UI", system-ui, sans-serif;
@@ -30,22 +32,97 @@
 }
 
 @layer base {
+  html {
+    color-scheme: light;
+  }
+
   body {
     @apply bg-sand font-sans text-olive-dark antialiased;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply tracking-tight;
+  }
+
+  button:not(:disabled) {
+    cursor: pointer;
   }
 
   ::selection {
     background: color-mix(in srgb, var(--color-sage) 45%, transparent);
   }
+
+  /* Keyboard-only focus ring, brand-tinted. Inputs keep their own :focus
+     ring; this covers buttons, links, and table rows reached via Tab. */
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-olive) 55%, transparent);
+    outline-offset: 2px;
+  }
+
+  /* Quiet, rounded scrollbars so dense panels (job tables, log traces)
+     don't ship the browser-default chrome gray. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(38, 23, 15, 0.18) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+    background-color: rgba(38, 23, 15, 0.18);
+  }
 }
 
 @layer components {
-  /* Tactile press feedback for primary CTAs (submit/create/retry buttons) --
-     a quick scale-down on :active reads as a real button press rather than
-     just a color swap. Left off secondary/toggle buttons on purpose so it
-     stays a signal for "this is the primary action," not decoration. */
+  /* ---------- Buttons ----------
+     One visual system, four intents. Sizing (padding/text size) stays at the
+     call site so a compact card action and a full-width form submit share
+     the same look without a matrix of size variants. */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-medium transition select-none disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-olive text-white shadow-[0_10px_22px_-10px_rgba(138,58,31,0.65)] hover:bg-olive-dark;
+  }
+  .btn-secondary {
+    @apply border border-olive-dark/10 bg-white/70 text-olive-dark hover:border-olive-dark/20 hover:bg-white;
+  }
+  .btn-ghost {
+    @apply text-olive-dark/60 hover:bg-olive-dark/5 hover:text-olive-dark;
+  }
+  .btn-danger {
+    @apply bg-terracotta text-white hover:bg-[#a84427];
+  }
+
+  /* Tactile press feedback for primary CTAs -- kept as its own class (not
+     baked into .btn) so it stays a signal for "this is the main action". */
   .btn-press {
     @apply transition-transform duration-150 active:scale-[0.97];
+  }
+
+  /* ---------- Form fields ---------- */
+  .input {
+    @apply block w-full rounded-xl border border-olive-dark/10 bg-white px-3.5 py-2.5 text-sm text-olive-dark transition outline-none placeholder:text-olive-dark/35 focus:border-olive/50 focus:ring-4 focus:ring-olive/10;
+  }
+  .input-sm {
+    @apply rounded-lg px-2.5 py-1.5 text-xs;
+  }
+
+  /* ---------- Skeletons ----------
+     Static tint here; the shimmer sweep is added under prefers-reduced-motion:
+     no-preference below, so reduced-motion users get a calm placeholder. */
+  .skeleton {
+    @apply rounded-lg bg-olive-dark/[0.07];
   }
 }
 
@@ -83,6 +160,30 @@
     }
   }
 
+  @keyframes shimmer {
+    to {
+      background-position: -200% 0;
+    }
+  }
+
+  /* The glowing dot travelling down the auth screen's job-lifecycle rail. */
+  @keyframes pipeline-travel {
+    0% {
+      top: 6px;
+      opacity: 0;
+    }
+    10% {
+      opacity: 1;
+    }
+    88% {
+      opacity: 1;
+    }
+    100% {
+      top: calc(100% - 14px);
+      opacity: 0;
+    }
+  }
+
   .animate-fade-in-up {
     animation: fade-in-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -95,9 +196,24 @@
     animation: scale-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
+  .skeleton {
+    background-image: linear-gradient(
+      100deg,
+      rgba(38, 23, 15, 0.06) 40%,
+      rgba(38, 23, 15, 0.13) 50%,
+      rgba(38, 23, 15, 0.06) 60%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s linear infinite;
+  }
+
+  .pipeline-traveler {
+    animation: pipeline-travel 3.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+
   /* Staggers a list of .animate-fade-in-up children by DOM order, up to 8
-     deep -- used for card grids (QueueMatrix) and table rows (JobExplorer)
-     so a fresh render reveals as a gentle cascade instead of all at once. */
+     deep -- used for card grids (QueueMatrix) and the overview so a fresh
+     render reveals as a gentle cascade instead of all at once. */
   .stagger > *:nth-child(1) { animation-delay: 0ms; }
   .stagger > *:nth-child(2) { animation-delay: 40ms; }
   .stagger > *:nth-child(3) { animation-delay: 80ms; }
@@ -113,5 +229,9 @@
   .animate-fade-in,
   .animate-scale-in {
     animation: none;
+  }
+
+  .pipeline-traveler {
+    display: none;
   }
 }

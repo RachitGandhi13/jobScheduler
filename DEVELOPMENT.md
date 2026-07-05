@@ -421,6 +421,26 @@ this failure mode) — the price of putting the queue in the same database as ev
   not the serif the moodboard actually used — an intentional override of the reference image where
   it conflicted with an explicit instruction.
 
+- **Production-polish pass on the frontend: primitives first, then surfaces.** The premium feel
+  comes from a small set of shared primitives added to `index.css` (`.btn` + four intent variants,
+  `.input`/`.input-sm`, `.skeleton` with a shimmer that degrades to a static tint under
+  `prefers-reduced-motion`) and two tiny components (`Skeleton`, `StatusBadge`) — every surface
+  then just consumes them, so buttons/inputs/loading states can't drift apart again. The auth
+  screen became the flagship: a split layout with a dark espresso brand panel (ambient rust/gold
+  glows, a CSS-only animated pulse travelling down a Queued→Claimed→Running→Completed rail — the
+  product's actual lifecycle as the marketing visual — plus feature checkmarks and proof-point
+  stats) beside the form; below `lg:` the panel drops and a compact brand row keeps identity.
+  App chrome gained a real brand mark (also the favicon, inline SVG data URI in `index.html`), a
+  bottom-of-sidebar user chip (initials avatar, email, role badge — kept `aria-label="Account"` so
+  it stays one obvious click target), and an active-project pill in the header. Loading went from
+  "Loading…" text to skeletons (overview tiles, queue cards, job rows, log traces), empty states
+  got icons + a "Create your first job" CTA, job statuses became dot+tint badges (completed
+  borrows the chart's validated success green; failed uses the reserved alert color), and the
+  toast moved to espresso with a gold check. Verified the way every UI change in this project has
+  been: a Playwright run through signup → queues → create-job → detail panel → account → logout at
+  1440px and 390px, screenshots reviewed frame by frame, zero console errors — not just a clean
+  `vite build`.
+
 ## Design trace: queue pausing × cron evaluation at the DB level
 
 These two features never touch each other directly, but they interact through the one query both
