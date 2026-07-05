@@ -36,6 +36,13 @@
       "when": 1783191117928,
       "tag": "0004_add_google_oauth",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783271878716,
+      "tag": "0005_remove_google_oauth",
+      "breakpoints": true
     }
   ]
 }

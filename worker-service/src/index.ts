@@ -21,10 +21,6 @@ export const db = createDb(DATABASE_URL);
 let shuttingDown = false;
 const inFlight = new Set<Promise<void>>();
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // Lets a pg_notify('job_available', ...) short-circuit the current poll wait
 // instead of the worker sitting out the rest of POLL_INTERVAL_MS. Racing
 // against a notification rather than replacing the sleep entirely means a

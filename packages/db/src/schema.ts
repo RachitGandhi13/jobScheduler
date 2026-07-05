@@ -77,21 +77,12 @@ export const organizations = pgTable("organizations", {
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: varchar("email", { length: 255 }).notNull(),
-  // Nullable: a user who signs up via Google has no password of their own to
-  // hash. Exactly one of passwordHash/googleId is expected to be set in
-  // practice, enforced at the application layer (POST /auth/signup requires
-  // a password; POST /auth/google requires a verified Google ID token) rather
-  // than a DB constraint, since a user could plausibly link both later.
-  passwordHash: varchar("password_hash", { length: 255 }),
-  // Google's stable per-user "sub" claim from a verified ID token. Set once,
-  // on first Google sign-in for this email -- see POST /auth/google.
-  googleId: varchar("google_id", { length: 255 }),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
   name: varchar("name", { length: 255 }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   emailIdx: uniqueIndex("users_email_idx").on(table.email),
-  googleIdIdx: uniqueIndex("users_google_id_idx").on(table.googleId),
 }));
 
 // --- Organization Members (join table, also the RBAC hook) -------------------

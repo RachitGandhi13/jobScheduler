@@ -161,8 +161,4 @@ export const authApi = {
   login: (body: LoginBody) =>
     request<{ data: AuthSession }>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
   me: () => request<{ data: Omit<AuthSession, "token"> }>("/auth/me"),
-  // `credential` is the ID token Google Identity Services hands back on a
-  // successful "Sign in with Google" -- see components/AuthScreen.tsx.
-  google: (credential: string) =>
-    request<{ data: AuthSession }>("/auth/google", { method: "POST", body: JSON.stringify({ credential }) }),
 };

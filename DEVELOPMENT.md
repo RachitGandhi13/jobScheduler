@@ -388,32 +388,16 @@ this failure mode) — the price of putting the queue in the same database as ev
   with a real, correctly-classified heuristic summary in `dead_letter_queue.ai_summary` (confirmed
   via `psql`), with no `ANTHROPIC_API_KEY` set anywhere in the local environment.
 
-- **"Sign in with Google" verifies an ID token client-side; it never becomes an OAuth client
-  itself.** Two shapes of "Google login" exist: the full Authorization Code flow (server redirects
-  to Google, exchanges a code for tokens, needs a client secret and a registered redirect URI), and
-  Google Identity Services' one-tap/button flow (the frontend gets a signed ID token directly from
-  Google's JS SDK, and the backend's only job is verifying that token's signature). Went with the
-  second — no client secret to protect, no redirect URI to register per environment, and
-  `google-auth-library`'s `OAuth2Client.verifyIdToken()` is a few lines against Google's published
-  public keys. `POST /auth/google` deliberately handles both "this email already has an account"
-  (log in, and link `google_id` if this is the first Google sign-in for it) and "brand new email"
-  (auto-provision the identical User/Organization/Default Project/Queue/Retry-Policy transaction
-  `POST /auth/signup` already does) behind one endpoint, since a real "Sign in with Google" button
-  can't ask the user up front which case they're in. Google's own `email_verified` claim is trusted
-  in place of a password — rejected outright if false, rather than silently treating it as true.
-  `users.password_hash` had to become nullable (a Google-only account never sets one); the login
-  handler's `bcrypt.compare` call was updated to short-circuit on a null hash first, since passing
-  `null` to `bcrypt.compare` throws rather than just failing the comparison. Optional and
-  gracefully degraded like `ANTHROPIC_API_KEY`: `GOOGLE_CLIENT_ID` unset means `POST /auth/google`
-  returns `503` and the frontend's "or continue with Google" divider + button simply don't render
-  at all (checked once, at module scope, not re-evaluated per-request). Verified live: `503` with
-  no `GOOGLE_CLIENT_ID` set, `401 invalid_google_token` for a garbage credential once a (fake) client
-  ID was configured, `400` for a missing `credential` field, and confirmed the existing
-  password-based signup/login flows are entirely unaffected by the schema change (fresh signup,
-  then login with the same password, both against the post-migration schema). The one thing that
-  cannot be verified without a browser and a real Google account is the actual happy path — an ID
-  token is a JWT signed by Google's private key, which cannot be fabricated in a test environment;
-  this is inherent to the design, not a gap in verification effort.
+- **"Sign in with Google" was built, then removed before submission** — this is why
+  `packages/db/drizzle/` has both `0004_add_google_oauth.sql` and `0005_remove_google_oauth.sql`
+  rather than one clean migration: `0004` added `users.google_id` and relaxed `password_hash` to
+  nullable; `0005` drops `google_id` and restores `password_hash NOT NULL`. Left both migration
+  files in place rather than deleting `0004` outright — replaying migrations `0000`→`0005` in order
+  against a fresh database reaches the exact same schema production ended up at, so rewriting
+  history here would break that replay guarantee for no real benefit. The feature itself (an ID
+  token verified via `google-auth-library`, one endpoint handling both login-by-email and
+  auto-provisioning a new workspace) worked and was verified live, but was removed unused since it
+  was never actually configured with a real Google OAuth Client ID end-to-end.
 
 - **Re-theme (warm rust/cream/gold palette, Helvetica, motion) touched exactly one file for
   color/type and stayed component-structure-neutral everywhere else.** Every component already
@@ -480,7 +464,9 @@ and its child appeared in the same poll cycle, `run_at` set to the correct next 
 
 ## Final systems trace
 
-End-to-end path of one job through every layer built across Phases 1–4, as verified live against a
+End-to-end path of one job through every layer built across Phases 1–4 (the original core build,
+before project/queue management, RBAC enforcement, and the eight bonus features were added — those
+have their own verification notes in the Design decisions log above), as verified live against a
 throwaway Postgres instance (seeded org/project/queue, real `backend-api` + `worker-service`
 processes, no mocks):
 
@@ -502,23 +488,23 @@ processes, no mocks):
    `maxAttempts` → `failed` + a `dead_letter_queue` row. Verified: forced failures walked through
    fixed-backoff retries into the DLQ with a full `job_logs` trace; a recurring job's completion
    produced exactly one child row with the correct next `run_at` and preserved `cron_expression`.
-4. **Fault tolerance** — every 5s the worker updates `workers.last_heartbeat_at`; every 10s
-   `backend-api`'s `zombieCleanup` sweep flips workers stale past `WORKER_HEARTBEAT_TIMEOUT_MS` to
-   `offline` and requeues whatever they were holding (`status → queued`, `run_at → now()`, attempts
-   untouched). Verified: a worker process hard-killed mid-execution had its `running` job reclaimed
-   and requeued within one sweep interval.
+4. **Fault tolerance** — every 5s the worker inserts a row into `worker_heartbeats` (insert-only
+   history, not an overwritten column — see the schema renormalization entry above); every 10s
+   `backend-api`'s `zombieCleanup` sweep flips workers whose *latest* heartbeat is stale past
+   `WORKER_HEARTBEAT_TIMEOUT_MS` to `offline` and requeues whatever they were holding
+   (`status → queued`, `run_at → now()`, attempts untouched). Verified: a worker process hard-killed
+   mid-execution had its `running` job reclaimed and requeued within one sweep interval.
 5. **Observability** — `GET /jobs` (paginated/filterable), `GET /jobs/:jobId/logs`, `GET /queues`,
    `GET /workers` (fleet-wide), and `GET /metrics` (status counts + DLQ total in one query) give the
    dashboard everything it renders without any endpoint doing more than one join beyond its own
    table. Verified: all five returned correct shapes against live seeded/executed data.
-6. **Dashboard** — `frontend-dashboard` polls (3)–(5)'s read endpoints every 4–5s and renders Cluster
-   Health (worker status + job-state counts), the Throughput chart, the Queue Matrix (pause/resume
-   calling back into step 2's enforcement), and the Job Explorer with its log-trace slide-out.
-   Verified: `tsc --noEmit` and `vite build` both clean; the dev server serves and every component
-   module transforms without error against a live backend. **Not verified**: actual rendered
-   layout/styling/responsiveness in a browser — no browser-automation tool was available in this
-   environment, so the visual result of the design-token/responsive-layout work is unconfirmed
-   beyond "it compiles and the markup is structurally sound."
+6. **Dashboard** — `frontend-dashboard` polls (3)–(5)'s read endpoints every 4–5s (plus a live
+   WebSocket channel for Overview, see "Bonus features" above) and renders Cluster Health (worker
+   status + job-state counts), the Throughput chart, the Queue Matrix (pause/resume calling back
+   into step 2's enforcement), and the Job Explorer with its log-trace slide-out. Verified beyond
+   `tsc --noEmit`/`vite build`: real rendered screenshots via a Playwright-driven browser against a
+   live backend, repeated across every later feature added (project/queue management, job creation,
+   AI failure summaries, the rust/cream re-theme) — not just markup correctness.
 7. **Auth** — `POST /api/auth/signup` (`backend-api/src/routes/auth.ts`) hashes the password with
    `bcrypt`, then in one transaction creates the `User` + `Organization` + owner
    `OrganizationMember` + a default `Project` + `Queue`, and returns a JWT signed with

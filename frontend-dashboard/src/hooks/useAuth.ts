@@ -41,14 +41,6 @@ export function useAuth() {
     setSession(res.data);
   }, []);
 
-  // One call handles both an existing account (logs in) and a brand new
-  // email (auto-provisions a workspace) -- same as POST /auth/google itself.
-  const loginWithGoogle = useCallback(async (credential: string) => {
-    const res = await authApi.google(credential);
-    saveSession(res.data);
-    setSession(res.data);
-  }, []);
-
   const logout = useCallback(() => {
     clearSession();
     setSession(null);
@@ -65,5 +57,5 @@ export function useAuth() {
     });
   }, []);
 
-  return { session, checking, login, signup, loginWithGoogle, logout, switchProject };
+  return { session, checking, login, signup, logout, switchProject };
 }

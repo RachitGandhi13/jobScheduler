@@ -64,7 +64,7 @@ function NoProjectCard({ onCreated }: { onCreated: (project: { id: string; name:
 }
 
 function App() {
-  const { session, checking, login, signup, loginWithGoogle, logout, switchProject } = useAuth();
+  const { session, checking, login, signup, logout, switchProject } = useAuth();
   const [tab, setTab] = useState<TabKey>("overview");
 
   const hasProject = session?.project != null;
@@ -91,7 +91,7 @@ function App() {
   }
 
   if (!session) {
-    return <AuthScreen onLogin={login} onSignup={signup} onGoogleLogin={loginWithGoogle} />;
+    return <AuthScreen onLogin={login} onSignup={signup} />;
   }
 
   return (
